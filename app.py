@@ -9,10 +9,10 @@ from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
-TOKEN = os.environ.get("BOT_TOKEN")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+# تم وضع التوكن مباشرة هنا لضمان عمله بدون مشاكل في الاستضافة
+TOKEN = "9066496655:AAGJeywcK2Awh_R5v5l6ofYvIvlWx4FrZYg"
 PORT = int(os.environ.get("PORT", 10000))
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID") # إذا تركتها فارغة سيتمكن الجميع من استخدام البوت، أو ضع آيديك هنا
 
 users_db = {}
 
@@ -23,8 +23,8 @@ def get_user(chat_id):
             "template": "Hello Telegram Support,\nMy group has been restricted. Please review.",
             "subject": "Appeal to lift restriction on Telegram group",
             "target_email": "recover@telegram.org",
-            "delay": 5,     # الفاصل الزمني الافتراضي بالثواني (السليب)
-            "count": 200,   # عدد الرفع الافتراضي
+            "delay": 5,     
+            "count": 200,   
             "state": "IDLE",
             "is_running": False
         }
@@ -223,7 +223,7 @@ def webhook():
         elif user["state"] == "WAITING_EMAILS":
             parts = text.split(":", 1)
             if len(parts) == 2:
-                user["emails"].append({"email": parts[0].strip(), "password": parts[1].strip()})
+                user["emails"].append({"email": parts[0].strip(), "password": parts[1].strip()}}
                 user["state"] = "IDLE"
                 send_telegram(chat_id, f"✅ تم حفظ الإيميل بنجاح!", get_main_menu_keyboard())
             else:
@@ -267,7 +267,13 @@ def webhook():
 
 @app.route("/")
 def index():
-    return "Bot is active!", 200
+    # ربط الويب هوك تلقائياً بمجرد فتح رابط الموقع في المتصفح
+    webhook_url = "https://telegram-bot-new3.onrender.com/webhook"
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+    return "Bot is active and Webhook is set!", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
