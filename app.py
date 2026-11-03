@@ -9,10 +9,10 @@ from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
-TOKEN = os.environ.get("BOT_TOKEN")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+TOKEN = "9066496655:AAGJeywcK2Awh_R5v5l6ofYvIvlWx4FrZYg"
 PORT = int(os.environ.get("PORT", 10000))
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
+# استخدام strip لحذف أي مسافات مخفية قد تسبب مشاكل
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 
 users_db = {}
 
@@ -23,8 +23,8 @@ def get_user(chat_id):
             "template": "Hello Telegram Support,\nMy group has been restricted. Please review.",
             "subject": "Appeal to lift restriction on Telegram group",
             "target_email": "recover@telegram.org",
-            "delay": 5,     # الفاصل الزمني الافتراضي بالثواني (السليب)
-            "count": 200,   # عدد الرفع الافتراضي
+            "delay": 5,     
+            "count": 200,   
             "state": "IDLE",
             "is_running": False
         }
@@ -120,11 +120,11 @@ def webhook():
         
     if "callback_query" in update:
         cq = update["callback_query"]
-        chat_id = cq["message"]["chat"]["id"]
+        chat_id = str(cq["message"]["chat"]["id"])
         message_id = cq["message"]["message_id"]
         data = cq["data"]
         
-        if ADMIN_CHAT_ID and str(chat_id) != str(ADMIN_CHAT_ID):
+        if ADMIN_CHAT_ID and chat_id != ADMIN_CHAT_ID:
             return "OK", 200
             
         user = get_user(chat_id)
@@ -201,10 +201,10 @@ def webhook():
 
     if "message" in update:
         message = update["message"]
-        chat_id = message["chat"]["id"]
+        chat_id = str(message["chat"]["id"])
         text = message.get("text", "").strip()
         
-        if ADMIN_CHAT_ID and str(chat_id) != str(ADMIN_CHAT_ID):
+        if ADMIN_CHAT_ID and chat_id != ADMIN_CHAT_ID:
             return "OK", 200
             
         user = get_user(chat_id)
@@ -267,7 +267,12 @@ def webhook():
 
 @app.route("/")
 def index():
-    return "Bot is active!", 200
+    webhook_url = "https://telegram-bot-new3.onrender.com/webhook"
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}")
+    except Exception as e:
+        print(f"Webhook Error: {e}")
+    return "Bot is active and Webhook is set!", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
