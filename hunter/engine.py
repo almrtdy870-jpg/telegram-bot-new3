@@ -17,7 +17,9 @@ MAX_QUEUE = 1000
 
 
 class Hunter:
-    def __init__(self, store, on_found, on_status, claimer_getter):
+    def __init__(self, store, on_found, on_status, claimer_getter, on_maybe=None):
+        self.on_maybe = on_maybe        # (list_of_names) batched unverified results
+        self.maybe_buf = []
         self.store = store
         # on_found(username, status, source, claim_result)
         self.on_found = on_found
@@ -65,6 +67,7 @@ class Hunter:
             t.join()
         self.running = False
         self.stats["finished"] = time.time()
+        self._flush_maybe()
         self.store.save()
         event(f"توقف الصيد ({self.stats['checked']} فحص)", "warn")
         self.on_status(self.summary(final=True))
@@ -160,12 +163,18 @@ class Hunter:
                     self.store.add_found(name, status, source)
                     self.on_found(name, status, source, None)
             elif status == checker.AVAILABLE:
-                if claimer is not None and claimer.ready and source != "account":
-                    # account is flood-limited: verify later instead of spamming
-                    self._queue_verify(name)
-                else:
+                if source == "account":
                     self._bump("available")
                     self._confirmed(name, source, claimer)
+                elif claimer is not None:
+                    # sessions exist but are flood-limited / offline:
+                    # verify silently later instead of spamming
+                    self._queue_verify(name)
+                else:
+                    # no sessions at all: only t.me/fragment, unverified - batch it
+                    with self._q_lock:
+                        self.maybe_buf.append(name)
+                    self.store.add_found(name, "unverified", source)
 
             delay = float(self.store.settings.get("delay", 0.5) or 0)
             if delay:
@@ -214,8 +223,15 @@ class Hunter:
                 if not self.running:
                     return
                 time.sleep(1)
+            self._flush_maybe()
             self.store.save()
             self.on_status(self.summary())
+
+    def _flush_maybe(self):
+        with self._q_lock:
+            names, self.maybe_buf = self.maybe_buf, []
+        if names and self.on_maybe:
+            self.on_maybe(names)
 
     def summary(self, final=False):
         s = self.stats

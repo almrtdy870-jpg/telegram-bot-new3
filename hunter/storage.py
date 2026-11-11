@@ -13,10 +13,10 @@ DEFAULT_SETTINGS = {
     "suffix": "",
     "words": [],
     "word_variants": False,
-    "threads": 5,
-    "delay": 0.5,              # seconds between checks per thread
+    "threads": 3,
+    "delay": 1.0,              # seconds between checks per thread
     "max_checks": 0,           # 0 = unlimited
-    "claim_mode": "off",       # off | channel | account
+    "claim_mode": "channel",   # off | channel | account
     "notify_fragment": False,  # also report names listed on Fragment
 }
 

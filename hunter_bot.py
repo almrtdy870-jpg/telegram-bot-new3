@@ -136,7 +136,17 @@ def on_status(_summary=None):
         bot.send(chat_id, dashboard(), main_menu())
 
 
-hunter = Hunter(store, on_found, on_status, get_claimer)
+def on_maybe(names):
+    chat_id = hunt_ctx["chat_id"]
+    if not chat_id:
+        return
+    bot.send(chat_id, f"🟡 <b>محتملة غير مؤكدة ({len(names)})</b>\n"
+                      "ماكو جلسة متصلة، فهاي من t.me بس وأغلبها ممكن تكون محجوزة أو محظورة:\n\n"
+                      + " ".join(f"@{n}" for n in names[:60])
+                      + "\n\n💡 ضيف جلسة من 🔑 الجلسات حتى ينفحصن صح وينحجزن.")
+
+
+hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe)
 
 # ---------------------------------------------------------------- texts
 CLAIM_LABELS = {"off": "إيقاف", "channel": "قناة", "account": "حسابي"}
@@ -189,6 +199,8 @@ def dashboard():
         if pool.claim_flood_left:
             text += f" • حجز {fmt_wait(pool.claim_flood_left)}"
         text += "\n"
+    if hunter.running and not pool.ready:
+        text += "• ⚠️ ماكو جلسة متصلة - الفحص غير دقيق\n"
     if hunter.verify_q or hunter.claim_q:
         text += f"• 🕓 بانتظار التحقق {len(hunter.verify_q)} • الحجز {len(hunter.claim_q)}\n"
     text += f"{LINE}\n📋 <b>آخر الأحداث</b>\n"
@@ -340,8 +352,6 @@ def start_hunt(chat_id, mid=None):
     s = store.settings
     if s["mode"] == "words" and not s["words"]:
         return "⚠️ قائمة الكلمات فارغة، أرسل الكلمات أولاً من ⚙️ الإعدادات."
-    if s["claim_mode"] != "off" and not pool.ready:
-        return "⚠️ الحجز مفعّل لكن ماكو جلسة متصلة. ضيف جلسة من 🔑 الجلسات أو أطفي الحجز."
     if hunter.running:
         return "⚠️ الصيد شغّال أصلاً."
     hunt_ctx["chat_id"] = chat_id
@@ -351,6 +361,10 @@ def start_hunt(chat_id, mid=None):
     hunt_ctx["status_msg"] = mid
     hunter.start()
     on_status()
+    if not pool.ready:
+        reason = ("الجلسات موجودة بس مو متصلة أو بفلود، فالمحتملات تنتظر وتنفحص وتنحجز أول ما تتصل."
+                  if pool.sessions else "ماكو أي جلسة، فالنتائج غير مؤكدة وتجيك مجمّعة.")
+        bot.send(chat_id, f"⚠️ <b>ماكو جلسة متصلة</b>\n{reason}\nشوف 🔑 الجلسات و 📜 سجل الأخطاء.")
     return None
 
 
@@ -427,9 +441,13 @@ def found_text():
     found = store.data["found"][-40:]
     if not found:
         return "📭 ماكو نتائج بعد."
-    lines = [f"{'🔒' if f.get('claimed') else ('💎' if f['status'] == 'fragment' else '✅')} @{f['username']}"
-             for f in reversed(found)]
-    return f"🏆 <b>النتائج ({len(store.data['found'])})</b>\n🔒 محجوز • ✅ متاح\n\n" + "\n".join(lines)
+    def icon(f):
+        if f.get("claimed"):
+            return "🔒"
+        return {"fragment": "💎", "unverified": "🟡"}.get(f["status"], "✅")
+    lines = [f"{icon(f)} @{f['username']}" for f in reversed(found)]
+    return (f"🏆 <b>النتائج ({len(store.data['found'])})</b>\n🔒 محجوز • ✅ متاح مؤكد • 🟡 غير مؤكد\n\n"
+            + "\n".join(lines))
 
 
 def errors_text():
