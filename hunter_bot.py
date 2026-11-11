@@ -99,6 +99,7 @@ def env_sessions():
 def connect_session(string, label):
     """Connect one StringSession and add it to the pool. Return the Claimer."""
     c = Claimer(API_ID, API_HASH, string, label)
+    c.set_base_interval(store.settings.get("acc_interval", 4.0))
     c.start()
     pool.add(c)
     if c.ready:
@@ -498,6 +499,7 @@ def settings_menu():
          btn(f"⏱ التأخير: {s['delay']}s", "set_delay")],
         [btn(f"🔢 حد الفحص: {s['max_checks'] or '∞'}", "set_max"),
          btn(f"🔒 الحجز: {CLAIM_LABELS[s['claim_mode']]}", "cycle_claim")],
+        [btn(f"🐢 فاصل فحص الحساب: {s.get('acc_interval', 4.0):g}s", "set_acc_interval")],
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
@@ -793,6 +795,9 @@ PROMPTS = {
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-5 حتى ما يصير فلود."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 1)"),
+    "set_acc_interval": ("acc_interval", "🐢 كل كم ثانية كل حساب يسوي فحص؟ (مثال <code>4</code>)\n\n"
+                                         "• أقل = أسرع بس فلود أكثر\n• أكثر = أبطأ بس الحساب يصمد\n"
+                                         "الأنسب 3 - 6. (إذا حساب أخذ فلود، يتبطأ وحده تلقائياً)"),
     "set_max": ("max_checks", "🔢 أرسل الحد الأقصى للفحص، أو 0 لبلا حد"),
     "set_similar": ("similar", "🧬 أرسل اليوزر اللي تريد مشابهاته (مثال <code>@lion</code>).\n"
                                "يولّد: تكرار حرف، _ بالنص، حروف شبيهة (o→0 ، i→l)، تبديل، حذف، إضافة حرف، لواحق...\n"
@@ -837,6 +842,15 @@ def handle_input(key, text):
             return "⚠️ أرسل رقم بين 0 و 120."
         store.set("delay", v)
         return f"✅ التأخير: {v} ثانية"
+    if key == "acc_interval":
+        try:
+            v = float(text)
+            assert 0.5 <= v <= 60
+        except (ValueError, AssertionError):
+            return "⚠️ أرسل رقم بين 0.5 و 60."
+        store.set("acc_interval", v)
+        pool.set_base_interval(v)
+        return f"✅ كل حساب يفحص كل {v:g} ثانية"
     if key == "max_checks":
         if not text.isdigit():
             return "⚠️ أرسل رقم صحيح."

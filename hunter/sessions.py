@@ -84,10 +84,16 @@ class SessionPool:
         start = next(self._rr) % len(a)
         return a[start:] + a[:start]
 
+    def set_base_interval(self, seconds):
+        for c in self.sessions:
+            c.set_base_interval(seconds)
+
     def check(self, username):
-        for c in self._rotation():
-            if c.check_flood_left:
-                continue
+        # use the account that is free soonest instead of queueing on one
+        free = [c for c in self._rotation() if not c.check_flood_left]
+        with self._lock:  # pick + book atomically so threads spread out
+            free.sort(key=lambda c: c.next_check_at)
+        for c in free:
             res = c.check(username)
             if res is not None:
                 return res

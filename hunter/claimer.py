@@ -4,7 +4,8 @@ Runs Telethon on a private asyncio loop in a background thread so the rest of
 the (threaded) bot can call it synchronously.
 
 Flood control:
-  * account checks are throttled globally (CHECK_INTERVAL seconds apart);
+  * account checks are throttled per account (`interval` seconds apart); the
+    interval doubles after a FloodWait and slowly returns to `base_interval`;
   * check and claim floods are tracked separately, since Telegram limits each
     method on its own;
   * a single "holder" channel is reused until a username actually sticks, so
@@ -16,6 +17,7 @@ import threading
 import time
 
 from . import checker
+from .events import error
 
 try:
     from telethon import TelegramClient, errors, functions
@@ -23,7 +25,8 @@ try:
 except ImportError:  # optional dependency
     TelegramClient = None
 
-CHECK_INTERVAL = 1.2  # seconds between account.checkUsername calls
+CHECK_INTERVAL = 4.0  # default seconds between account.checkUsername calls
+MAX_INTERVAL = 60.0
 
 
 def fmt_wait(seconds: int) -> str:
@@ -48,7 +51,11 @@ class Claimer:
         self._holder = None
         self._claim_lock = threading.Lock()
         self._check_lock = threading.Lock()
-        self._last_check = 0.0
+        self._next_slot = 0.0    # earliest time the next check may run
+        self._slot_lock = threading.Lock()
+        self.base_interval = CHECK_INTERVAL
+        self.interval = CHECK_INTERVAL
+        self._ok_streak = 0
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
@@ -101,23 +108,43 @@ class Claimer:
     def flood_left(self) -> int:
         return max(self.check_flood_left, self.claim_flood_left)
 
+    @property
+    def next_check_at(self) -> float:
+        return self._next_slot
+
+    def set_base_interval(self, seconds: float):
+        self.base_interval = max(0.5, float(seconds))
+        self.interval = self.base_interval
+
+    def _reserve_slot(self) -> float:
+        """Book the next free time slot for a check (spaced `interval` apart)."""
+        with self._slot_lock:
+            slot = max(time.time(), self._next_slot)
+            self._next_slot = slot + self.interval
+            return slot
+
     # -- check ----------------------------------------------------------
     def check(self, username):
         """Return AVAILABLE/TAKEN/FRAGMENT/INVALID, or None if unavailable now."""
         if not self.ready or self.check_flood_left:
             return None
-        with self._check_lock:  # global throttle across worker threads
-            wait = self._last_check + CHECK_INTERVAL - time.time()
-            if wait > 0:
-                time.sleep(wait)
-            self._last_check = time.time()
-            if self.check_flood_left:
-                return None
-            try:
-                return self._run(self._check(username), timeout=30)
-            except Exception as e:  # noqa: BLE001
-                self.last_error = str(e)
-                return None
+        wait = self._reserve_slot() - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        if self.check_flood_left:
+            return None
+        try:
+            res = self._run(self._check(username), timeout=30)
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
+            return None
+        if res is not None:
+            # healthy for a while -> speed back up towards the base interval
+            self._ok_streak += 1
+            if self._ok_streak >= 30 and self.interval > self.base_interval:
+                self.interval = max(self.base_interval, self.interval * 0.8)
+                self._ok_streak = 0
+        return res
 
     async def _check(self, username):
         try:
@@ -125,6 +152,11 @@ class Claimer:
             return checker.AVAILABLE if ok else checker.TAKEN
         except errors.FloodWaitError as e:
             self.check_flood_until = time.time() + e.seconds
+            # slow this account down so it floods less next time
+            self.interval = min(MAX_INTERVAL, max(self.interval * 2, self.base_interval * 2))
+            self._ok_streak = 0
+            name = f"@{self.me.username}" if self.me and self.me.username else self.label
+            error(f"🧊 فلود فحص على {name}: {fmt_wait(e.seconds)} - صار يفحص كل {self.interval:.0f}ث")
             return None
         except errors.UsernameInvalidError:
             return checker.INVALID

@@ -91,12 +91,14 @@ def full_check(username: str, claimer=None):
     if tme == UNKNOWN:
         return UNKNOWN, "t.me"
 
+    # Fragment is free (no account needed): rule out sold / auctioned names
+    # before spending a rate-limited account check on them.
+    frag = check_fragment(username)
+    if frag in (TAKEN, FRAGMENT):
+        return frag, "fragment"
+
     if claimer is not None and claimer.ready:
         res = claimer.check(username)
         if res is not None:
             return res, "account"
-
-    frag = check_fragment(username)
-    if frag in (TAKEN, FRAGMENT):
-        return frag, "fragment"
     return AVAILABLE, "t.me+fragment"
