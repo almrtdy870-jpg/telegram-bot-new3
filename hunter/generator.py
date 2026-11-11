@@ -119,10 +119,78 @@ def words_stream(words, prefix="", suffix="", variants=False, seen=None):
             yield name
 
 
+# characters that look alike (both directions are generated)
+LOOKALIKE = {
+    "o": "0", "i": "1l", "l": "1i", "e": "3", "a": "4", "s": "5z", "t": "7",
+    "b": "8", "g": "9q", "q": "g", "z": "s2", "u": "v", "v": "uw", "w": "vv",
+    "m": "n", "n": "m", "c": "k", "k": "c", "y": "i", "0": "o", "1": "il",
+    "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g", "2": "z",
+}
+SIMILAR_SUFFIXES = ("s", "x", "z", "y", "o", "i", "e", "a", "_x", "_z", "_0", "_1",
+                    "tg", "_tg", "bot", "vip", "pro", "real", "app", "hq", "me", "official")
+SIMILAR_PREFIXES = ("the", "i", "x", "mr", "its", "im", "my", "real", "get", "go", "hey", "a")
+
+
+def similar_candidates(base: str):
+    """Variants of `base`, ordered roughly from most to least similar."""
+    n = len(base)
+    yield base
+    # doubled letter: abcde -> aabcde
+    for i in range(n):
+        yield base[:i + 1] + base[i] + base[i + 1:]
+    # underscore inside: ab_cde
+    for i in range(1, n):
+        yield base[:i] + "_" + base[i:]
+    # look-alike substitutions (single, then all at once)
+    for i, ch in enumerate(base):
+        for rep in LOOKALIKE.get(ch, ""):
+            yield base[:i] + rep + base[i + 1:]
+    # swap neighbours
+    for i in range(n - 1):
+        yield base[:i] + base[i + 1] + base[i] + base[i + 2:]
+    # drop one char
+    for i in range(n):
+        yield base[:i] + base[i + 1:]
+    # remove underscores / doubled letters already in the name
+    yield base.replace("_", "")
+    # common short suffixes / prefixes
+    for s in SIMILAR_SUFFIXES:
+        yield base + s
+    for p in SIMILAR_PREFIXES:
+        yield p + base
+    # one extra char at the end / start
+    for ch in LETTERS + DIGITS:
+        yield base + ch
+    for ch in LETTERS:
+        yield ch + base
+    # replace one char with any letter/digit
+    for i in range(n):
+        for ch in LETTERS + DIGITS:
+            yield base[:i] + ch + base[i + 1:]
+    # insert one char anywhere
+    for i in range(1, n):
+        for ch in LETTERS + DIGITS:
+            yield base[:i] + ch + base[i:]
+
+
+def similar_stream(base, prefix="", suffix="", seen=None):
+    seen = seen if seen is not None else set()
+    base = normalize(base)
+    for c in similar_candidates(base):
+        name = f"{prefix}{c}{suffix}"
+        if name in seen or not is_valid(name):
+            continue
+        seen.add(name)
+        yield name
+
+
 def make_stream(settings, seen=None):
     mode = settings.get("mode", "preset")
     prefix = settings.get("prefix", "")
     suffix = settings.get("suffix", "")
+    if mode == "similar":
+        # fresh `seen` so a repeated search re-checks everything
+        return similar_stream(settings.get("similar_base", ""), prefix, suffix)
     if mode == "words":
         return words_stream(settings.get("words", []), prefix, suffix,
                             settings.get("word_variants", False), seen)

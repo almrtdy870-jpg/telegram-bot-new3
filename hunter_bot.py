@@ -73,10 +73,13 @@ def on_found(username, status, source, claim_result):
                           f"https://fragment.com/username/{username}")
         return
     text = f"🎉 <b>يوزر متاح!</b>\n\n👤 @{username}\n🧭 المصدر: {source}"
+    markup = None
     if claim_result is not None:
         ok, msg = claim_result
         text += f"\n{'🔒' if ok else '⚠️'} التثبيت: {html.escape(msg)}"
-    bot.send(chat_id, text)
+    if not (claim_result and claim_result[0]):
+        markup = {"inline_keyboard": [[{"text": "📌 احجزه بقناة", "callback_data": f"claim:{username}"}]]}
+    bot.send(chat_id, text, markup)
 
 
 def on_status(text):
@@ -85,6 +88,9 @@ def on_status(text):
         return
     markup = {"inline_keyboard": [[{"text": "⏹ إيقاف", "callback_data": "stop"},
                                    {"text": "🔄 تحديث", "callback_data": "stats"}]]}
+    if not hunter.running:
+        markup = {"inline_keyboard": [[{"text": "🏆 الصيد", "callback_data": "found"},
+                                       {"text": "🔙 القائمة", "callback_data": "menu"}]]}
     if msg_id:
         bot.edit(chat_id, msg_id, text, markup)
     else:
@@ -102,6 +108,8 @@ MODE_LABELS = {"preset": "جاهز", "template": "قالب", "words": "كلما�
 def target_label(s):
     if s["mode"] == "words":
         return f"كلمات ({len(s['words'])})"
+    if s["mode"] == "similar":
+        return f"مشابه @{s['similar_base']}"
     if s["mode"] == "template":
         return f"قالب {s['template']}"
     return PRESETS.get(s["preset"], PRESETS["five"])[0]
@@ -113,6 +121,8 @@ def main_menu():
     return {"inline_keyboard": [
         [{"text": run, "callback_data": "stop" if hunter.running else "start"}],
         [{"text": f"🎯 النوع: {target_label(s)}", "callback_data": "presets"}],
+        [{"text": "🧬 بحث مشابه ليوزر", "callback_data": "set_similar"},
+         {"text": "📌 حجز يوزر", "callback_data": "manual_claim"}],
         [{"text": "✍️ قالب مخصص", "callback_data": "set_template"},
          {"text": "📜 قائمة كلمات", "callback_data": "set_words"}],
         [{"text": f"➕ بادئة: {s['prefix'] or '-'}", "callback_data": "set_prefix"},
@@ -164,6 +174,8 @@ HELP = (
     "<code>CVCVC</code> → bodax\n"
     "<code>LDDDD</code> → k4821\n"
     "<code>iraqLL</code> → iraqzx\n\n"
+    "🧬 <b>بحث مشابه</b>: تدز يوزر مثل <code>@lion</code> ويفحص "
+    "<code>liion</code> <code>l_ion</code> <code>li0n</code> <code>lions</code> <code>thelion</code> ...\n\n"
     "⚠️ أقل طول لليوزر 5 أحرف، ويجب أن يبدأ بحرف ولا ينتهي بـ _.\n"
     "🔒 التثبيت يحتاج ربط حسابك (API_ID / API_HASH / TG_SESSION)."
 )
@@ -266,8 +278,48 @@ PROMPTS = {
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-10 حتى ما ينحظر الآيبي."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 0.5)"),
     "set_max": ("max_checks", "🔢 أرسل الحد الأقصى للفحص، أو 0 لبلا حد"),
+    "set_similar": ("similar", "🧬 أرسل اليوزر اللي تريد مشابهاته (مثال <code>@lion</code>).\n"
+                                "يولّد: تكرار حرف، _ بالنص، حروف شبيهة (o→0 ، i→l)، تبديل، حذف، إضافة حرف، لواحق مثل s/x/tg...\n"
+                                "ويبدي الصيد فوراً."),
+    "manual_claim": ("claim", "📌 أرسل اليوزر (أو أكثر، كل واحد بسطر) وأحجزه بقناة جديدة فوراً."),
     "check": ("check", "🔍 أرسل يوزر أو أكثر (كل واحد بسطر، حتى 50)"),
 }
+
+
+def run_claim_list(chat_id, names):
+    c = get_claimer()
+    if c is None or not c.ready:
+        bot.send(chat_id, "⚠️ لازم تربط حسابك أول (👤 حالة الحساب).", BACK)
+        return
+    for n in names[:10]:
+        if not is_valid(n):
+            bot.send(chat_id, f"🚫 <code>{html.escape(n)}</code> صيغة غير صالحة (5 أحرف على الأقل)")
+            continue
+        ok, msg = c.claim(n, "channel")
+        if ok:
+            store.add_found(n, checker.AVAILABLE, "manual", claimed=True)
+            bot.send(chat_id, f"🔒 <b>تم الحجز!</b> @{n}\n{html.escape(msg)}")
+        else:
+            bot.send(chat_id, f"⚠️ ما انحجز @{n}\n<code>{html.escape(msg)}</code>")
+
+
+def start_similar(chat_id, text):
+    base = normalize(text.split()[0]) if text.split() else ""
+    if not (3 <= len(base) <= 32) or not all(ch.isalnum() or ch == "_" for ch in base) or not base.isascii():
+        bot.send(chat_id, "⚠️ يوزر غير صالح، أرسله بالإنجليزي مثل <code>@lion</code>", BACK)
+        return
+    states.pop(chat_id, None)
+    store.set("similar_base", base)
+    store.set("mode", "similar")
+    from hunter.generator import similar_stream
+    total = sum(1 for _ in similar_stream(base, store.settings["prefix"], store.settings["suffix"]))
+    if hunter.running:
+        bot.send(chat_id, f"✅ تم حفظ @{base} ({total} مشابه).\n⚠️ الصيد شغّال، أوقفه وابدأ من جديد.", main_menu())
+        return
+    bot.send(chat_id, f"🧬 جاري البحث عن <b>{total}</b> يوزر مشابه لـ @{base} ...")
+    err = start_hunt(chat_id)
+    if err:
+        bot.send(chat_id, err, main_menu())
 
 
 def handle_callback(cq):
@@ -298,6 +350,10 @@ def handle_callback(cq):
             on_status(hunter.summary())
         else:
             bot.edit(chat_id, mid, hunter.summary(final=not hunter.running), BACK)
+    elif data.startswith("claim:"):
+        name = data.split(":", 1)[1]
+        bot.send(chat_id, f"⏳ جاري حجز @{name} ...")
+        threading.Thread(target=run_claim_list, args=(chat_id, [name]), daemon=True).start()
     elif data == "presets":
         bot.edit(chat_id, mid, "🎯 <b>اختر نوع اليوزرات:</b>", presets_menu())
     elif data.startswith("preset:"):
@@ -409,6 +465,14 @@ def handle_message(msg):
             return
         text = content
 
+    if state == "similar":
+        start_similar(chat_id, text)
+        return
+    if state == "claim":
+        states.pop(chat_id, None)
+        names = [normalize(x) for x in text.split()]
+        threading.Thread(target=run_claim_list, args=(chat_id, names), daemon=True).start()
+        return
     if state == "check":
         states.pop(chat_id, None)
         names = [normalize(x) for x in text.split()]

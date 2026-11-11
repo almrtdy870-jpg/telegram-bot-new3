@@ -5,7 +5,8 @@ import threading
 import time
 
 DEFAULT_SETTINGS = {
-    "mode": "preset",          # preset | template | words
+    "mode": "preset",          # preset | template | words | similar
+    "similar_base": "",
     "preset": "five",
     "template": "LLLLL",
     "prefix": "",
