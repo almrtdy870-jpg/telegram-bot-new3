@@ -16,7 +16,11 @@ Environment variables:
     PORT            web port for webhook mode (default 10000)
 """
 import atexit
+import hashlib
+import hmac
 import html
+import json
+import urllib.parse
 import itertools
 import os
 import re
@@ -263,9 +267,13 @@ def btn(text, data):
 BACK = {"inline_keyboard": [[btn("🔙 رجوع", "menu")]]}
 
 
+WEBAPP_URL = f"{WEBHOOK_URL}/app" if WEBHOOK_URL.startswith("https://") else ""
+
+
 def main_menu():
     run = btn("⏹ إيقاف الصيد", "stop") if hunter.running else btn("▶️ تشغيل الصيد", "start")
-    return {"inline_keyboard": [
+    top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}}]] if WEBAPP_URL else []
+    return {"inline_keyboard": top + [
         [run],
         [btn("📊 الإحصائيات", "stats"), btn("🔑 الجلسات", "sessions")],
         [btn("⚙️ الإعدادات", "settings"), btn("📜 سجل الأخطاء", "errors")],
@@ -1149,6 +1157,134 @@ def index():
     return "Username hunter is running", 200
 
 
+# ---------------------------------------------------------------- mini app (web dashboard)
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hunter", "webapp.html"),
+          encoding="utf-8") as _f:
+    WEBAPP_HTML = _f.read()
+
+
+def is_admin(user_id: str) -> bool:
+    if ADMIN_IDS:
+        return user_id in ADMIN_IDS
+    return bool(user_id) and store.data.get("owner") == user_id
+
+
+def webapp_user(init_data: str):
+    """Validate Telegram WebApp initData; return the user id when it's the owner."""
+    if not init_data:
+        return None
+    pairs = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+    received = pairs.pop("hash", "")
+    check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+    secret = hmac.new(b"WebAppData", TOKEN.encode(), hashlib.sha256).digest()
+    calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    if not received or not hmac.compare_digest(calc, received):
+        return None
+    try:
+        if time.time() - int(pairs.get("auth_date", 0)) > 7 * 86400:
+            return None
+        uid = str(json.loads(pairs.get("user", "{}")).get("id", ""))
+    except (ValueError, TypeError):
+        return None
+    return uid if is_admin(uid) else None
+
+
+def webapp_state():
+    s = store.settings
+    found = store.data["found"]
+    st = hunter.stats
+    end = st["finished"] or time.time()
+    el = max(1, end - st["started"])
+    sessions = []
+    for c in pool.sessions:
+        if c.ready:
+            icon = "🧊" if c.flood_left else ("🈵" if c.full else "🟢")
+            name = f"@{c.me.username}" if c.me.username else str(c.me.id)
+            note = (f"فلود {fmt_wait(c.flood_left)}" if c.flood_left else
+                    ("وصلت حد القنوات" if c.full else "متصلة"))
+        else:
+            icon, name, note = "🔴", "غير متصلة", c.last_error[:60]
+        sessions.append({"icon": icon, "name": name, "source": c.label, "note": note})
+    return {
+        "running": hunter.running,
+        "mode": s["mode"],
+        "mode_label": target_label(s),
+        "sessions": {"active": len(pool.active), "total": len(pool.sessions), "list": sessions},
+        "rules": len(s.get("replace_rules", [])),
+        "results": len(found),
+        "claimed": sum(1 for f in found if f.get("claimed")),
+        "total_checks": store.data.get("total_checks", 0),
+        "errors_count": errors.count,
+        "now": clock(),
+        "uptime": hms(time.time() - BOOT),
+        "backup": clock(backup.last_backup) if backup.last_backup else "",
+        "flood": {"check": fmt_wait(pool.check_flood_left) if pool.ready and pool.check_flood_left else "",
+                  "claim": fmt_wait(pool.claim_flood_left) if pool.ready and pool.claim_flood_left else ""},
+        "queues": {"verify": len(hunter.verify_q), "claim": len(hunter.claim_q)},
+        "events": [{"t": clock(t)[:5], "level": lv, "msg": m} for t, lv, m in reversed(events.last(6))],
+        "errors": [{"t": clock(t), "msg": m} for t, _lv, m in reversed(errors.last(15))],
+        "stats": {"checked": st["checked"], "available": st["available"], "claimed": st["claimed"],
+                  "fragment": st["fragment"], "taken": st["taken"], "errors": st["errors"],
+                  "rate": round(st["checked"] / el * 60), "elapsed": hms(el) if st["checked"] else "-",
+                  "last": hunter.last_checked},
+        "settings": {"claim": CLAIM_LABELS[s["claim_mode"]],
+                     "notify": NOTIFY_LABELS[s.get("notify", "claimed")],
+                     "threads": s["threads"], "delay": s["delay"]},
+    }
+
+
+@app.route("/app")
+def webapp_page():
+    return WEBAPP_HTML, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
+
+
+@app.route("/api/state")
+def webapp_api_state():
+    if not webapp_user(request.headers.get("X-Init-Data", "")):
+        return {"error": "unauthorized"}, 401
+    return webapp_state()
+
+
+@app.route("/api/action", methods=["POST"])
+def webapp_api_action():
+    uid = webapp_user(request.headers.get("X-Init-Data", ""))
+    if not uid:
+        return {"error": "unauthorized"}, 401
+    body = request.get_json(silent=True) or {}
+    action, value = body.get("action"), body.get("value")
+    s = store.settings
+    message = ""
+    if action == "start":
+        message = start_hunt(uid) or ""
+    elif action == "stop":
+        if hunter.running:
+            hunter.stop()
+            event("أمر إيقاف من لوحة التحكم", "warn")
+    elif action == "claim":
+        order = ["off", "channel", "account"]
+        nxt = order[(order.index(s["claim_mode"]) + 1) % 3]
+        if nxt != "off" and not pool.ready:
+            nxt, message = "off", "لازم تضيف جلسة أول من 🔑 الجلسات"
+        store.set("claim_mode", nxt)
+    elif action == "notify":
+        order = ["claimed", "off", "all"]
+        cur = s.get("notify", "claimed")
+        store.set("notify", order[(order.index(cur) + 1) % 3] if cur in order else "claimed")
+    elif action == "threads":
+        try:
+            store.set("threads", max(1, min(50, int(s["threads"]) + int(value))))
+        except (TypeError, ValueError):
+            pass
+    elif action == "delay":
+        try:
+            store.set("delay", round(max(0.0, min(120.0, float(s["delay"]) + float(value))), 1))
+        except (TypeError, ValueError):
+            pass
+    else:
+        return {"error": "unknown action"}, 400
+    return {"ok": True, "message": message, "state": webapp_state()}
+
+
 def poll_forever():
     bot.call("deleteWebhook")
     offset = None
@@ -1194,6 +1330,9 @@ threading.Thread(target=startup, daemon=True).start()
 if WEBHOOK_URL:
     bot.call("setWebhook", url=f"{WEBHOOK_URL}/webhook",
              allowed_updates=["message", "callback_query"])
+if WEBAPP_URL:  # the chat's menu button opens the dashboard
+    bot.call("setChatMenuButton",
+             menu_button={"type": "web_app", "text": "لوحة التحكم", "web_app": {"url": WEBAPP_URL}})
 
 if __name__ == "__main__":
     if WEBHOOK_URL:

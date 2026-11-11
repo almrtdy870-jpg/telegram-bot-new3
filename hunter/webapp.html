@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>لوحة مراقبة الصيد</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0f13; --panel: #15181e; --card: #1d2129; --line: #2a2f3a;
+    --text: #f2f4f8; --muted: #9aa3b2; --green: #2fd27a; --green-bg: rgba(47,210,122,.14);
+    --yellow: #f5b829; --red: #e5484d; --red-bg: #7a2a33; --blue: #2c3650; --blue-h: #36425f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: "Cairo", system-ui, sans-serif; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 16px; }
+  .panel { background: var(--panel); border-radius: 22px; padding: 18px 16px 20px; }
+  .top { display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-weight: 800; letter-spacing: .5px; color: #d9dde6; font-size: 17px; }
+  .brand b { color: var(--yellow); }
+  .online { background: var(--green-bg); color: var(--green); font-weight: 700; font-size: 12px;
+            padding: 4px 12px; border-radius: 999px; letter-spacing: .5px; }
+  .online.off { background: rgba(229,72,77,.15); color: var(--red); }
+  h1 { font-size: 30px; margin: 14px 0 2px; font-weight: 800; }
+  .sub { color: var(--muted); font-size: 12px; letter-spacing: 1px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .card { background: var(--card); border-radius: 16px; padding: 14px; }
+  .card .k { color: var(--muted); font-size: 14px; }
+  .card .v { font-size: 36px; font-weight: 800; line-height: 1.3; direction: ltr; text-align: right; }
+  .pill { display: inline-block; background: var(--green-bg); color: var(--green); font-size: 12px;
+          font-weight: 700; padding: 2px 12px; border-radius: 999px; }
+  .pill.warn { background: rgba(245,184,41,.14); color: var(--yellow); }
+  .pill.bad { background: rgba(229,72,77,.15); color: var(--red); }
+  .box { background: var(--card); border-radius: 16px; padding: 16px; margin-top: 12px; }
+  .box h2 { font-size: 18px; margin: 0 0 10px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0;
+         border-bottom: 1px solid var(--line); font-size: 15px; }
+  .row:last-child { border-bottom: 0; }
+  .row .l { color: var(--muted); }
+  .row .r { font-weight: 700; direction: ltr; }
+  .ev { padding: 5px 0; font-size: 15px; display: flex; gap: 8px; align-items: baseline; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(-1px); }
+  .ok .dot { background: var(--green); } .ok { color: var(--green); }
+  .warn .dot { background: var(--yellow); } .warn { color: var(--yellow); }
+  .info .dot { background: #6aa0ff; } .info { color: #9cc0ff; }
+  .error .dot { background: var(--red); } .error { color: #ff8b8f; }
+  .ev time { color: var(--muted); font-size: 12px; margin-inline-start: auto; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  button { font-family: inherit; border: 0; color: var(--text); background: var(--blue);
+           border-radius: 16px; padding: 16px 8px; font-size: 17px; font-weight: 700; cursor: pointer; }
+  button:active { background: var(--blue-h); }
+  .big { width: 100%; margin-top: 12px; font-size: 19px; padding: 18px; }
+  .stop { background: var(--red-bg); } .start { background: #1f6b45; }
+  .sec { display: none; } .sec.on { display: block; }
+  .tag { font-size: 12px; color: var(--muted); }
+  .set { display: flex; justify-content: space-between; align-items: center; padding: 8px 0;
+         border-bottom: 1px solid var(--line); }
+  .set:last-child { border-bottom: 0; }
+  .set button { padding: 8px 14px; font-size: 15px; border-radius: 12px; }
+  .stepper { display: flex; gap: 8px; align-items: center; }
+  .stepper span { min-width: 42px; text-align: center; font-weight: 800; direction: ltr; }
+  .empty { color: var(--muted); font-size: 14px; }
+  .err { background: rgba(229,72,77,.15); color: #ff8b8f; padding: 12px; border-radius: 12px;
+         margin-bottom: 12px; display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="err" id="err"></div>
+  <div class="panel">
+    <div class="top">
+      <span class="online" id="online">SYSTEM ONLINE</span>
+      <span class="brand"><b>⚡</b> CONTROL PANEL</span>
+    </div>
+    <h1>لوحة مراقبة الصيد</h1>
+    <div class="sub">LIVE SYSTEM MONITOR</div>
+
+    <div class="grid">
+      <div class="card"><div class="k">🔑 الجلسات النشطة</div><div class="v" id="c_sess">00</div>
+        <span class="pill" id="c_sess_p">متصل</span></div>
+      <div class="card"><div class="k">📁 الصيغ</div><div class="v" id="c_rules">00</div>
+        <span class="pill" id="c_rules_p">مفعّلة</span></div>
+      <div class="card"><div class="k">🔍 إجمالي الفحوصات</div><div class="v" id="c_checks">0</div></div>
+      <div class="card"><div class="k">🎯 النتائج المسجلة</div><div class="v" id="c_found">0</div>
+        <span class="pill" id="c_claimed">🔒 0 محجوز</span></div>
+    </div>
+
+    <div class="box">
+      <h2>📡 حالة النظام المباشرة</h2>
+      <div class="row"><span class="l">حالة التشغيل</span><span class="pill" id="s_run">يعمل</span></div>
+      <div class="row"><span class="l">نوع الصيد</span><span class="r" id="s_mode" style="direction:rtl">-</span></div>
+      <div class="row"><span class="l">آخر تحديث</span><span class="r" id="s_upd">-</span></div>
+      <div class="row"><span class="l">الأخطاء</span><span class="r" id="s_err">0</span></div>
+      <div class="row"><span class="l">مدة التشغيل</span><span class="r" id="s_up">-</span></div>
+      <div class="row" id="s_flood_row" style="display:none"><span class="l">🧊 فلود</span><span class="r" id="s_flood">-</span></div>
+      <div class="row"><span class="l">💾 آخر نسخة احتياطية</span><span class="r" id="s_bk">-</span></div>
+    </div>
+
+    <div class="box">
+      <h2>📋 آخر الأحداث</h2>
+      <div id="events"><div class="empty">لا توجد أحداث بعد</div></div>
+      <div class="hint">تحديث الأحداث تلقائياً</div>
+    </div>
+
+    <!-- sections opened by the buttons -->
+    <div class="box sec" id="sec_stats">
+      <h2>📊 الإحصائيات</h2><div id="stats"></div>
+    </div>
+    <div class="box sec" id="sec_sessions">
+      <h2>🔑 الجلسات</h2><div id="sessions"></div>
+      <div class="hint">الإضافة والحذف من داخل البوت: 🔑 الجلسات</div>
+    </div>
+    <div class="box sec" id="sec_settings">
+      <h2>⚙️ الإعدادات</h2>
+      <div class="set"><span>🔒 الحجز</span><button onclick="act('claim')" id="set_claim">-</button></div>
+      <div class="set"><span>🔔 الإشعارات</span><button onclick="act('notify')" id="set_notify">-</button></div>
+      <div class="set"><span>⚡ الخيوط</span><div class="stepper">
+        <button onclick="act('threads',-1)">−</button><span id="set_threads">-</span>
+        <button onclick="act('threads',1)">+</button></div></div>
+      <div class="set"><span>⏱ التأخير</span><div class="stepper">
+        <button onclick="act('delay',-0.5)">−</button><span id="set_delay">-</span>
+        <button onclick="act('delay',0.5)">+</button></div></div>
+      <div class="hint">باقي الإعدادات (الصيغ، القوالب، الكلمات) من داخل البوت.</div>
+    </div>
+    <div class="box sec" id="sec_errors">
+      <h2>📜 سجل الأخطاء</h2><div id="errors"></div>
+    </div>
+
+    <hr>
+    <div class="btns">
+      <button onclick="toggle('stats')">📊 الإحصائيات</button>
+      <button onclick="toggle('sessions')">🔑 الجلسات</button>
+      <button onclick="toggle('settings')">⚙️ الإعدادات</button>
+      <button onclick="toggle('errors')">📜 سجل الأخطاء</button>
+    </div>
+    <button class="big stop" id="runbtn" onclick="runToggle()">⏹ إيقاف الصيد</button>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor('#0d0f13'); tg.setBackgroundColor('#0d0f13'); } catch (e) {} }
+const initData = (tg && tg.initData) || "";
+let state = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pad = n => String(n).padStart(2, "0");
+
+function showErr(msg) { const e = $("err"); e.textContent = msg; e.style.display = msg ? "block" : "none"; }
+
+async function api(path, body) {
+  const r = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {"X-Init-Data": initData, "Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401 || r.status === 403) throw new Error("افتح اللوحة من زر البوت داخل تليجرام (هذه اللوحة خاصة)");
+  if (!r.ok) throw new Error("خطأ بالاتصال بالبوت (" + r.status + ")");
+  return r.json();
+}
+
+function render(s) {
+  state = s;
+  $("online").textContent = "SYSTEM ONLINE";
+  $("c_sess").textContent = pad(s.sessions.active);
+  const sp = $("c_sess_p");
+  sp.textContent = s.sessions.active ? "متصل" : (s.sessions.total ? "غير متصل" : "لا توجد");
+  sp.className = "pill" + (s.sessions.active ? "" : " bad");
+  $("c_rules").textContent = pad(s.rules);
+  $("c_rules_p").textContent = s.mode === "replace" ? "مفعّلة" : "غير مفعّلة";
+  $("c_rules_p").className = "pill" + (s.mode === "replace" ? "" : " warn");
+  $("c_checks").textContent = s.total_checks.toLocaleString("en-US");
+  $("c_found").textContent = s.results;
+  $("c_claimed").textContent = "🔒 " + s.claimed + " محجوز";
+
+  const run = $("s_run");
+  run.textContent = s.running ? "يعمل" : "متوقف";
+  run.className = "pill" + (s.running ? "" : " warn");
+  $("s_mode").textContent = s.mode_label;
+  $("s_upd").textContent = s.now;
+  $("s_err").textContent = s.errors_count;
+  $("s_up").textContent = s.uptime;
+  $("s_bk").textContent = s.backup || "—";
+  const fl = [];
+  if (s.flood.check) fl.push("فحص " + s.flood.check);
+  if (s.flood.claim) fl.push("حجز " + s.flood.claim);
+  $("s_flood_row").style.display = fl.length ? "flex" : "none";
+  $("s_flood").textContent = fl.join(" • ");
+
+  $("events").innerHTML = s.events.length ? s.events.map(e =>
+    `<div class="ev ${e.level}"><span class="dot"></span><span>${esc(e.msg)}</span><time>${e.t}</time></div>`).join("")
+    : '<div class="empty">لا توجد أحداث بعد</div>';
+
+  const st = s.stats;
+  $("stats").innerHTML = [
+    ["🔎 المفحوص بهذا الصيد", st.checked.toLocaleString("en-US")], ["✅ متاح مؤكد", st.available],
+    ["🔒 تم الحجز", st.claimed], ["💎 فراجمنت", st.fragment], ["❌ محجوز", st.taken.toLocaleString("en-US")],
+    ["⚠️ أخطاء", st.errors], ["⚡ السرعة", st.rate + " فحص/دقيقة"], ["⏳ مدة الصيد", st.elapsed],
+    ["🕐 آخر يوزر", st.last || "-"], ["🕓 بانتظار التحقق", s.queues.verify], ["📌 بانتظار الحجز", s.queues.claim],
+  ].map(([k, v]) => `<div class="row"><span class="l">${k}</span><span class="r">${esc(v)}</span></div>`).join("");
+
+  $("sessions").innerHTML = s.sessions.list.length ? s.sessions.list.map(x =>
+    `<div class="row"><span>${x.icon} ${esc(x.name)} <span class="tag">${esc(x.source)}</span></span>
+     <span class="tag">${esc(x.note || "")}</span></div>`).join("")
+    : '<div class="empty">ماكو جلسات. ضيف من البوت: 🔑 الجلسات ← ➕ إضافة بالرقم</div>';
+
+  $("errors").innerHTML = s.errors.length ? s.errors.map(e =>
+    `<div class="ev error"><span class="dot"></span><span>${esc(e.msg)}</span><time>${e.t}</time></div>`).join("")
+    : '<div class="empty">✅ ماكو أخطاء</div>';
+
+  $("set_claim").textContent = s.settings.claim;
+  $("set_notify").textContent = s.settings.notify;
+  $("set_threads").textContent = s.settings.threads;
+  $("set_delay").textContent = s.settings.delay + "s";
+
+  const b = $("runbtn");
+  b.textContent = s.running ? "⏹ إيقاف الصيد" : "▶️ تشغيل الصيد";
+  b.className = "big " + (s.running ? "stop" : "start");
+}
+
+async function refresh() {
+  try { render(await api("/api/state")); showErr(""); }
+  catch (e) { showErr(e.message); $("online").textContent = "OFFLINE"; $("online").className = "online off"; return; }
+  $("online").className = "online";
+}
+
+async function act(action, value) {
+  try {
+    const r = await api("/api/action", {action, value});
+    if (r.message && tg && tg.showAlert) tg.showAlert(r.message);
+    if (r.state) render(r.state);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("light");
+  } catch (e) { showErr(e.message); }
+}
+
+function runToggle() {
+  if (!state) return;
+  if (state.running && tg && tg.showConfirm) tg.showConfirm("توقف الصيد؟", ok => ok && act("stop"));
+  else act(state.running ? "stop" : "start");
+}
+
+function toggle(name) {
+  for (const n of ["stats", "sessions", "settings", "errors"]) {
+    const el = $("sec_" + n);
+    el.classList.toggle("on", n === name && !el.classList.contains("on"));
+  }
+  const open = $("sec_" + name);
+  if (open.classList.contains("on")) open.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
