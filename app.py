@@ -9,7 +9,7 @@ from email.mime.text import MIMEText
 
 app = Flask(__name__)
 
-TOKEN = "9066496655:AAGJeywcK2Awh_R5v5l6ofYvIvlWx4FrZYg"
+TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", 10000))
 # استخدام strip لحذف أي مسافات مخفية قد تسبب مشاكل
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
