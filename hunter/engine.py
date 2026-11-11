@@ -10,6 +10,7 @@ import time
 
 from . import checker
 from .claimer import fmt_wait
+from .events import error, event
 from .generator import make_stream
 
 MAX_QUEUE = 1000
@@ -49,6 +50,7 @@ class Hunter:
         self.running = True
         n = max(1, min(int(self.store.settings.get("threads", 5)), 50))
         self._threads = [threading.Thread(target=self._worker, daemon=True) for _ in range(n)]
+        event("تم تشغيل الصيد", "ok")
         for t in self._threads:
             t.start()
         threading.Thread(target=self._reporter, daemon=True).start()
@@ -63,6 +65,8 @@ class Hunter:
             t.join()
         self.running = False
         self.stats["finished"] = time.time()
+        self.store.save()
+        event(f"توقف الصيد ({self.stats['checked']} فحص)", "warn")
         self.on_status(self.summary(final=True))
 
     # -- queues ---------------------------------------------------------
@@ -125,6 +129,8 @@ class Hunter:
     def _bump(self, key):
         with self._stats_lock:
             self.stats[key] += 1
+            if key == "checked":
+                self.store.data["total_checks"] = self.store.data.get("total_checks", 0) + 1
 
     def _worker(self):
         errors_in_row = 0
@@ -139,6 +145,7 @@ class Hunter:
 
             if status == checker.UNKNOWN:
                 self._bump("errors")
+                error(f"فشل فحص @{name} ({source}) - احتمال حظر مؤقت")
                 errors_in_row += 1
                 # back off when t.me starts rate limiting us
                 time.sleep(min(60, 2 ** min(errors_in_row, 6)))
@@ -169,6 +176,7 @@ class Hunter:
         if mode != "off" and claimer is not None and claimer.ready:
             self._try_claim(name, source, claimer)
         else:
+            event(f"✅ متاح @{name}", "ok")
             self.store.add_found(name, checker.AVAILABLE, source)
             self.on_found(name, checker.AVAILABLE, source, None)
 
@@ -179,6 +187,8 @@ class Hunter:
         ok, msg = claimer.claim(name, mode)
         if not ok and msg.startswith("FLOOD:"):
             first_time = name not in self.claim_q
+            if first_time:
+                error(f"فلود حجز ({fmt_wait(claimer.claim_flood_left)}) - @{name} بالانتظار")
             self.queue_claim(name)
             if notify_wait and first_time:
                 self.store.add_found(name, checker.AVAILABLE, source, claimed=False)
@@ -186,6 +196,10 @@ class Hunter:
                               (False, f"الحساب بفلود ({fmt_wait(claimer.claim_flood_left)}) "
                                       "- بالانتظار وراح ينحجز تلقائياً"))
             return
+        if ok:
+            event(f"🔒 انحجز @{name}", "ok")
+        else:
+            error(f"ما انحجز @{name}: {msg}")
         if ok:
             self._bump("claimed")
             if mode == "account":  # an account holds a single username
@@ -200,6 +214,7 @@ class Hunter:
                 if not self.running:
                     return
                 time.sleep(1)
+            self.store.save()
             self.on_status(self.summary())
 
     def summary(self, final=False):

@@ -33,7 +33,9 @@ def fmt_wait(seconds: int) -> str:
 
 
 class Claimer:
-    def __init__(self, api_id, api_hash, session_string):
+    def __init__(self, api_id, api_hash, session_string, label="session"):
+        self.label = label
+        self.full = False  # hit the public-channel limit
         self.api_id = int(api_id)
         self.api_hash = api_hash
         self.session_string = session_string
@@ -75,6 +77,17 @@ class Claimer:
         if not await self.client.is_user_authorized():
             return None
         return await self.client.get_me()
+
+    def disconnect(self):
+        self.ready = False
+        async def go():
+            if self.client:
+                await self.client.disconnect()
+        try:
+            self._run(go(), timeout=15)
+        except Exception:  # noqa: BLE001
+            pass
+        self.loop.call_soon_threadsafe(self.loop.stop)
 
     @property
     def check_flood_left(self) -> int:
@@ -162,6 +175,7 @@ class Claimer:
             name = type(e).__name__
             if "TooMuch" in name or "TOO_MUCH" in str(e).upper():
                 self._holder = None
+                self.full = True
                 return False, "وصلت الحد الأقصى للقنوات العامة على الحساب"
             if "Occupied" in name or "OCCUPIED" in str(e).upper():
                 return False, "انحجز قبلك (محجوز)"
