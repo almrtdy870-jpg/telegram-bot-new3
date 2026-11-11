@@ -387,7 +387,8 @@ def make_stream(settings, seen=None, on_round=None):
         return words_stream(settings.get("words", []), prefix, suffix,
                             settings.get("word_variants", False), seen)
     if mode == "template":
-        templates = [settings.get("template") or "LLLLL"]
+        # several templates may be stored separated by spaces: hunt them together
+        templates = (settings.get("template") or "LLLLL").split() or ["LLLLL"]
     else:
         templates = PRESETS.get(settings.get("preset"), PRESETS["five"])[1]
     return random_stream(templates, prefix, suffix, seen)

@@ -202,7 +202,8 @@ def target_label(s):
     if s["mode"] == "replace":
         return f"تغيير حرف ({len(s.get('replace_rules', []))} صيغة)"
     if s["mode"] == "template":
-        return f"قالب {s['template']}"
+        n = len(s["template"].split())
+        return f"قالب {s['template']}" if n == 1 else f"{n} قوالب"
     return PRESETS.get(s["preset"], PRESETS["five"])[0]
 
 
@@ -806,7 +807,10 @@ def login_step(chat_id, state, text, mid):
 
 # ---------------------------------------------------------------- prompts
 PROMPTS = {
-    "set_template": ("template", "✍️ أرسل القالب (مثال <code>L=L=L</code> أو <code>CVCVC</code>).\nاضغط ❓ شرح القوالب للتفاصيل."),
+    "set_template": ("template", "✍️ أرسل القالب (مثال <code>L=L=L</code> أو <code>CVCVC</code>).\n\n"
+                                 "تكدر تدز <b>أكثر من قالب</b> بنفس الرسالة (كل واحد بسطر أو بينهم مسافة) "
+                                 "وتنصاد كلها سوه، مثلاً:\n<code>L_L_L\nL=L=L\nLL==L</code>\n\n"
+                                 "اضغط ❓ شرح القوالب للتفاصيل."),
     "set_words": ("words", "📜 أرسل الكلمات (كل كلمة بسطر) أو ارفع ملف .txt"),
     "set_prefix": ("prefix", "➕ أرسل البادئة، أو <code>-</code> للحذف"),
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
@@ -830,12 +834,18 @@ PROMPTS = {
 
 def handle_input(key, text):
     if key == "template":
-        tpl = text.replace(" ", "")
-        if not validate_template(tpl):
-            return "⚠️ قالب غير صالح. استخدم L D X V C = وحروف صغيرة/أرقام/_ فقط."
-        store.set("template", tpl)
+        tpls = list(dict.fromkeys(re.split(r"[\s,،]+", text.strip())))
+        tpls = [t for t in tpls if t][:50]
+        bad = [t for t in tpls if not validate_template(t) or not 5 <= len(t) <= 32]
+        if not tpls or bad:
+            return ("⚠️ قالب غير صالح" + (f": <code>{html.escape(bad[0])}</code>" if bad else "")
+                    + "\nكل قالب لازم 5 إلى 32 رمز، ويستخدم L D X V C = وحروف صغيرة/أرقام/_ فقط.")
+        store.set("template", " ".join(tpls))
         store.set("mode", "template")
-        return f"✅ تم حفظ القالب <code>{tpl}</code> (~{space_size(tpl):,} احتمال)"
+        total = sum(space_size(t) for t in tpls)
+        lines = "\n".join(f"• <code>{t}</code> (~{space_size(t):,})" for t in tpls)
+        return (f"✅ تم حفظ {len(tpls)} قالب" + (" — تنصاد سوه مخلوطة" if len(tpls) > 1 else "")
+                + f"\n{lines}\nالمجموع: ~{total:,} احتمال")
     if key == "words":
         words = [normalize(w) for w in text.replace(",", "\n").split()]
         words = list(dict.fromkeys(w for w in words if w))
