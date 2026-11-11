@@ -275,14 +275,39 @@ def main_menu():
     top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}}]] if WEBAPP_URL else []
     return {"inline_keyboard": top + [
         [run],
-        [btn("📊 الإحصائيات", "stats"), btn("🔑 الجلسات", "sessions")],
-        [btn("⚙️ الإعدادات", "settings"), btn("📜 سجل الأخطاء", "errors")],
-        [btn("🎯 نوع الصيد", "presets"), btn("🧬 بحث مشابه", "set_similar")],
-        [btn("🔤 تغيير حرف بالطلب", "replace")],
-        [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
-        [btn("🏆 النتائج", "found"), btn("🔄 تحديث", "menu")],
-        [btn(f"الإشعارات: {NOTIFY_LABELS[store.settings.get('notify', 'claimed')]}", "cycle_notify")],
+        [btn("🎯 طرق الصيد", "modes"), btn("🛠 الأدوات", "tools")],
+        [btn("🔑 الجلسات", "sessions"), btn("⚙️ الإعدادات", "settings")],
+        [btn("🏆 النتائج", "found"), btn("📊 الإحصائيات", "stats")],
     ]}
+
+
+def modes_text():
+    return ("🎯 <b>طرق الصيد</b>\n\n"
+            f"• الطريقة الحالية: <b>{html.escape(target_label(store.settings))}</b>\n\n"
+            "🎯 <b>أنواع جاهزة</b>: خماسي، سداسي، مكرر، شبه ثلاثي...\n"
+            "🔤 <b>تغيير حرف بالطلب</b>: صيغك، دائري ولحد 1000 صيغة\n"
+            "🧬 <b>بحث مشابه</b>: يوزرات قريبة من يوزر تحدده\n"
+            "✍️ <b>قالب مخصص</b>: شكل تكتبه بنفسك (L D X ...)\n"
+            "📜 <b>قائمة كلمات</b>: كلمات تدزها أو ملف .txt")
+
+
+def modes_menu():
+    return {"inline_keyboard": [
+        [btn("🎯 أنواع جاهزة", "presets"), btn("🔤 تغيير حرف بالطلب", "replace")],
+        [btn("🧬 بحث مشابه", "set_similar"), btn("✍️ قالب مخصص", "set_template")],
+        [btn("📜 قائمة كلمات", "set_words")],
+        [btn("🔙 رجوع", "menu")],
+    ]}
+
+
+def tools_menu():
+    return {"inline_keyboard": [
+        [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
+        [btn("🔙 رجوع", "menu")],
+    ]}
+
+
+SETTINGS_TEXT = "⚙️ <b>الإعدادات</b>\n\nاختار شنو تريد تغيّر:"
 
 
 RULES_PER_PAGE = 8
@@ -336,7 +361,7 @@ def replace_menu(page=0):
         else:
             rows.append([btn("▶️ صيد كل الصيغ (دائري)", "rep_start")])
         rows.append([btn("🗑 مسح الكل", "rep_clear")])
-    rows.append([btn("🔙 رجوع", "menu")])
+    rows.append([btn("🔙 رجوع", "modes")])
     return {"inline_keyboard": rows}
 
 
@@ -467,7 +492,6 @@ def finish_rule(chat_id):
 def settings_menu():
     s = store.settings
     return {"inline_keyboard": [
-        [btn("✍️ قالب مخصص", "set_template"), btn("📜 قائمة كلمات", "set_words")],
         [btn(f"➕ بادئة: {s['prefix'] or '-'}", "set_prefix"),
          btn(f"➕ لاحقة: {s['suffix'] or '-'}", "set_suffix")],
         [btn(f"⚡ الخيوط: {s['threads']}", "set_threads"),
@@ -476,7 +500,9 @@ def settings_menu():
          btn(f"🔒 الحجز: {CLAIM_LABELS[s['claim_mode']]}", "cycle_claim")],
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
-        [btn("❓ شرح القوالب", "help"), btn("💾 نسخ احتياطي الحين", "backup_now")],
+        [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
+        [btn("📜 سجل الأخطاء", "errors"), btn("💾 نسخ احتياطي الحين", "backup_now")],
+        [btn("❓ شرح القوالب", "help")],
         [btn("🔙 رجوع", "menu")],
     ]}
 
@@ -491,7 +517,7 @@ def presets_menu():
             row = []
     if row:
         rows.append(row)
-    rows.append([btn("🔙 رجوع", "menu")])
+    rows.append([btn("🔙 رجوع", "modes")])
     return {"inline_keyboard": rows}
 
 
@@ -846,14 +872,22 @@ def handle_callback(cq):
         bot.edit(chat_id, mid, hunter.summary(final=not hunter.running),
                  {"inline_keyboard": [[btn("🔄 تحديث", "stats"), btn("🔙 رجوع", "menu")]]})
     elif data == "settings":
-        bot.edit(chat_id, mid, "⚙️ <b>الإعدادات</b>\n\nاختار شنو تريد تغيّر:", settings_menu())
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
+    elif data == "modes":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, modes_text(), modes_menu())
+    elif data == "tools":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, "🛠 <b>الأدوات</b>\n\n🔍 <b>فحص يوزر</b>: تشوف إذا يوزر متاح\n"
+                               "📌 <b>حجز يوزر</b>: تحجز يوزر بقناة فوراً", tools_menu())
     elif data == "errors":
         bot.edit(chat_id, mid, errors_text(),
-                 {"inline_keyboard": [[btn("🗑 مسح السجل", "errors_clear"), btn("🔙 رجوع", "menu")]]})
+                 {"inline_keyboard": [[btn("🗑 مسح السجل", "errors_clear"), btn("🔙 رجوع", "settings")]]})
     elif data == "errors_clear":
         errors.items.clear()
         errors.count = 0
-        bot.edit(chat_id, mid, errors_text(), BACK)
+        bot.edit(chat_id, mid, errors_text(), {"inline_keyboard": [[btn("🔙 رجوع", "settings")]]})
     elif data == "sessions":
         bot.edit(chat_id, mid, sessions_text(), sessions_menu())
     elif data.startswith("sess:"):
@@ -995,7 +1029,7 @@ def handle_callback(cq):
         order = ["claimed", "off", "all"]
         cur = store.settings.get("notify", "claimed")
         store.set("notify", order[(order.index(cur) + 1) % 3] if cur in order else "claimed")
-        bot.edit(chat_id, mid, dashboard(), main_menu())
+        bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
     elif data == "cycle_claim":
         order = ["off", "channel", "account"]
         nxt = order[(order.index(s["claim_mode"]) + 1) % 3]
@@ -1003,11 +1037,11 @@ def handle_callback(cq):
             bot.send(chat_id, "⚠️ لازم تضيف جلسة أول من 🔑 الجلسات.")
             nxt = "off"
         store.set("claim_mode", nxt)
-        bot.edit(chat_id, mid, "⚙️ <b>الإعدادات</b>\n\nاختار شنو تريد تغيّر:", settings_menu())
+        bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
     elif data in ("toggle_variants", "toggle_fragment"):
         key = "word_variants" if data == "toggle_variants" else "notify_fragment"
         store.set(key, not s[key])
-        bot.edit(chat_id, mid, "⚙️ <b>الإعدادات</b>\n\nاختار شنو تريد تغيّر:", settings_menu())
+        bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
     elif data == "found":
         bot.edit(chat_id, mid, found_text(), results_menu())
     elif data == "export":
@@ -1122,7 +1156,7 @@ def handle_message(msg):
         reply = handle_input(state, text)
         if reply and reply.startswith("✅"):
             states.pop(chat_id, None)
-            bot.send(chat_id, reply, settings_menu())
+            bot.send(chat_id, reply, modes_menu() if state in ("template", "words") else settings_menu())
         elif reply:
             bot.send(chat_id, reply, BACK)
         return
