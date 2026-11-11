@@ -88,6 +88,20 @@ pool = SessionPool()
 _pool_loaded = threading.Event()
 
 
+def apply_interval(target):
+    """acc_interval 0 = automatic (start at 4s and learn per account)."""
+    v = float(store.settings.get("acc_interval", 0) or 0)
+    target.set_base_interval(v or 4.0, auto=not v)
+
+
+def interval_label():
+    v = float(store.settings.get("acc_interval", 0) or 0)
+    if v:
+        return f"{v:g}s"
+    avg = pool.avg_interval
+    return f"تلقائي ({avg:.1f}s)" if avg else "تلقائي"
+
+
 def env_sessions():
     raw = [os.environ.get("TG_SESSION", ""), os.environ.get("TG_SESSIONS", "")]
     out = []
@@ -99,7 +113,7 @@ def env_sessions():
 def connect_session(string, label):
     """Connect one StringSession and add it to the pool. Return the Claimer."""
     c = Claimer(API_ID, API_HASH, string, label)
-    c.set_base_interval(store.settings.get("acc_interval", 4.0))
+    apply_interval(c)
     c.start()
     pool.add(c)
     if c.ready:
@@ -499,7 +513,7 @@ def settings_menu():
          btn(f"⏱ التأخير: {s['delay']}s", "set_delay")],
         [btn(f"🔢 حد الفحص: {s['max_checks'] or '∞'}", "set_max"),
          btn(f"🔒 الحجز: {CLAIM_LABELS[s['claim_mode']]}", "cycle_claim")],
-        [btn(f"🐢 فاصل فحص الحساب: {s.get('acc_interval', 4.0):g}s", "set_acc_interval")],
+        [btn(f"🐢 فاصل فحص الحساب: {interval_label()}", "set_acc_interval")],
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
@@ -566,7 +580,8 @@ def session_detail(i):
         return f"🔴 <b>جلسة غير متصلة</b> ({c.label})\n\n<code>{html.escape(c.last_error)}</code>"
     t = (f"🟢 <b>{html.escape(c.me.first_name or '')}</b>\n\n"
          f"• اليوزر: @{c.me.username or '-'}\n• الآيدي: <code>{c.me.id}</code>\n"
-         f"• المصدر: {c.label}\n")
+         f"• المصدر: {c.label}\n"
+         f"• يفحص كل: {c.interval:.1f} ثانية{' (تلقائي)' if c.auto else ''}\n")
     if c.check_flood_left:
         t += f"• 🧊 فلود الفحص: {fmt_wait(c.check_flood_left)}\n"
     if c.claim_flood_left:
@@ -795,9 +810,11 @@ PROMPTS = {
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-5 حتى ما يصير فلود."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 1)"),
-    "set_acc_interval": ("acc_interval", "🐢 كل كم ثانية كل حساب يسوي فحص؟ (مثال <code>4</code>)\n\n"
-                                         "• أقل = أسرع بس فلود أكثر\n• أكثر = أبطأ بس الحساب يصمد\n"
-                                         "الأنسب 3 - 6. (إذا حساب أخذ فلود، يتبطأ وحده تلقائياً)"),
+    "set_acc_interval": ("acc_interval", "🐢 <b>فاصل فحص الحساب</b>\n\n"
+                                         "✅ <b>الأفضل: دز <code>0</code> = تلقائي</b>\n"
+                                         "البوت يبدي من 4 ثواني، ويسرّع كل حساب ماشي زين لحد 2.5ث، "
+                                         "ويبطّئ الحساب اللي ياخذ فلود ويتعلّم السرعة المناسبة إله.\n\n"
+                                         "أو دز رقم ثابت (مثل <code>4</code>) إذا تريد تتحكم بنفسك."),
     "set_max": ("max_checks", "🔢 أرسل الحد الأقصى للفحص، أو 0 لبلا حد"),
     "set_similar": ("similar", "🧬 أرسل اليوزر اللي تريد مشابهاته (مثال <code>@lion</code>).\n"
                                "يولّد: تكرار حرف، _ بالنص، حروف شبيهة (o→0 ، i→l)، تبديل، حذف، إضافة حرف، لواحق...\n"
@@ -843,14 +860,17 @@ def handle_input(key, text):
         store.set("delay", v)
         return f"✅ التأخير: {v} ثانية"
     if key == "acc_interval":
+        t = text.strip().lower()
         try:
-            v = float(text)
-            assert 0.5 <= v <= 60
+            v = 0.0 if t in ("0", "تلقائي", "auto") else float(t)
+            assert v == 0 or 0.5 <= v <= 60
         except (ValueError, AssertionError):
-            return "⚠️ أرسل رقم بين 0.5 و 60."
+            return "⚠️ دز 0 للتلقائي، أو رقم بين 0.5 و 60."
         store.set("acc_interval", v)
-        pool.set_base_interval(v)
-        return f"✅ كل حساب يفحص كل {v:g} ثانية"
+        for c in pool.sessions:
+            apply_interval(c)
+        return "✅ الفاصل صار <b>تلقائي</b> - البوت يرتبه لكل حساب وحده" if not v \
+            else f"✅ كل حساب يفحص كل {v:g} ثانية (ثابت)"
     if key == "max_checks":
         if not text.isdigit():
             return "⚠️ أرسل رقم صحيح."
@@ -1350,6 +1370,12 @@ def startup():
             event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
     except Exception as e:  # noqa: BLE001
         error(f"فشل الاسترجاع: {e}")
+    if not store.data.get("auto_interval_v1"):
+        # one-time: the previous version stored a fixed 4s; switch to automatic
+        with store.lock:
+            store.data["settings"]["acc_interval"] = 0
+            store.data["auto_interval_v1"] = True
+            store.save()
     load_sessions()
     if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:
         chat_id = store.data["resume_chat"]

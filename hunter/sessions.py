@@ -84,9 +84,14 @@ class SessionPool:
         start = next(self._rr) % len(a)
         return a[start:] + a[:start]
 
-    def set_base_interval(self, seconds):
+    def set_base_interval(self, seconds, auto=False):
         for c in self.sessions:
-            c.set_base_interval(seconds)
+            c.set_base_interval(seconds, auto)
+
+    @property
+    def avg_interval(self):
+        a = self.active
+        return sum(c.interval for c in a) / len(a) if a else 0
 
     def check(self, username):
         # use the account that is free soonest instead of queueing on one

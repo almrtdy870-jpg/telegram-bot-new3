@@ -27,6 +27,8 @@ except ImportError:  # optional dependency
 
 CHECK_INTERVAL = 4.0  # default seconds between account.checkUsername calls
 MAX_INTERVAL = 60.0
+AUTO_MIN = 2.5        # auto mode never goes faster than this
+AUTO_MAX_BASE = 12.0  # ...and never learns a base slower than this
 
 
 def fmt_wait(seconds: int) -> str:
@@ -56,6 +58,7 @@ class Claimer:
         self.base_interval = CHECK_INTERVAL
         self.interval = CHECK_INTERVAL
         self._ok_streak = 0
+        self.auto = True  # learn the best interval for this account by itself
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
@@ -112,7 +115,8 @@ class Claimer:
     def next_check_at(self) -> float:
         return self._next_slot
 
-    def set_base_interval(self, seconds: float):
+    def set_base_interval(self, seconds: float, auto: bool = False):
+        self.auto = auto
         self.base_interval = max(0.5, float(seconds))
         self.interval = self.base_interval
 
@@ -144,6 +148,11 @@ class Claimer:
             if self._ok_streak >= 30 and self.interval > self.base_interval:
                 self.interval = max(self.base_interval, self.interval * 0.8)
                 self._ok_streak = 0
+            elif self.auto and self._ok_streak >= 120 and self.base_interval > AUTO_MIN:
+                # long healthy run: this account can go a bit faster
+                self.base_interval = max(AUTO_MIN, self.base_interval * 0.9)
+                self.interval = self.base_interval
+                self._ok_streak = 0
         return res
 
     async def _check(self, username):
@@ -153,6 +162,8 @@ class Claimer:
         except errors.FloodWaitError as e:
             self.check_flood_until = time.time() + e.seconds
             # slow this account down so it floods less next time
+            if self.auto:  # remember that this account needs to be slower
+                self.base_interval = min(AUTO_MAX_BASE, self.base_interval * 1.5)
             self.interval = min(MAX_INTERVAL, max(self.interval * 2, self.base_interval * 2))
             self._ok_streak = 0
             name = f"@{self.me.username}" if self.me and self.me.username else self.label

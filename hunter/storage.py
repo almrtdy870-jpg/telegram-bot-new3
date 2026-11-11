@@ -17,7 +17,7 @@ DEFAULT_SETTINGS = {
     "word_variants": False,
     "threads": 3,
     "delay": 1.0,              # seconds between checks per thread
-    "acc_interval": 4.0,       # seconds between account checks, per account
+    "acc_interval": 0,         # seconds between account checks per account; 0 = auto
     "max_checks": 0,           # 0 = unlimited
     "claim_mode": "channel",   # off | channel | account
     "notify_fragment": False,  # also report names listed on Fragment
