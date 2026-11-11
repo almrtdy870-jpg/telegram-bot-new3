@@ -239,10 +239,11 @@ def replace_count(rule) -> int:
     return n
 
 
-def replace_stream(rules, prefix="", suffix="", seen=None):
+def replace_stream(rules, prefix="", suffix="", seen=None, shuffle=True):
     """'Change letter on demand': for each rule {base, pos:[1-based]} try every
     letter a-z at the chosen positions, keeping the rest of `base` as is."""
     seen = seen if seen is not None else set()
+    names = []
     for rule in rules:
         base = normalize(rule.get("base", ""))
         pairs = [(p - 1, s) for p, s in zip(rule.get("pos", []), rule_sets(rule))
@@ -258,7 +259,10 @@ def replace_stream(rules, prefix="", suffix="", seen=None):
             if name in seen or not is_valid(name):
                 continue
             seen.add(name)
-            yield name
+            names.append(name)
+    if shuffle:
+        random.shuffle(names)  # random order, but every combination exactly once
+    yield from names
 
 
 def make_stream(settings, seen=None):

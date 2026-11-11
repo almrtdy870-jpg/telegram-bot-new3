@@ -270,7 +270,7 @@ def replace_text():
     rules = store.settings.get("replace_rules", [])
     text = ("🔤 <b>تغيير حرف بالطلب</b>\n\n"
             "تدز صيغة (مثل <code>vcvcv</code>)، وتختار رقم الحرف اللي يتغيّر، "
-            "وتختار <b>أنت</b> شنو الحروف اللي يجربها بمكانه:\n"
+            "وتختار <b>أنت</b> شنو الحروف اللي يجربها بمكانه، ويفحصها بترتيب عشوائي:\n"
             "<code>vcvcv</code> + الحرف 1 + <code>aeo</code> ← <code>acvcv</code> <code>ecvcv</code> <code>ocvcv</code>\n\n")
     if not rules:
         return text + "📭 ماكو صيغ بعد، اضغط ➕ إضافة صيغة جديدة."
@@ -307,6 +307,47 @@ def rep_chars_menu(same=False):
         rows.append(row)
     rows.append([btn("🔙 رجوع", "replace")])
     return {"inline_keyboard": rows}
+
+
+POS_SHORTCUTS = {
+    "last2": "آخر حرفين", "last1": "آخر حرف", "first2": "أول حرفين",
+    "first1": "أول حرف", "firstlast": "الأول + الأخير", "last3": "آخر 3 حروف",
+}
+
+
+def shortcut_positions(key, n):
+    return {"last1": [n], "last2": [n - 1, n], "last3": [n - 2, n - 1, n],
+            "first1": [1], "first2": [1, 2], "firstlast": [1, n]}.get(key, [])
+
+
+def rep_pos_menu(base):
+    n = len(base)
+    def lbl(k):
+        marked = "".join("_" if i + 1 in shortcut_positions(k, n) else ch for i, ch in enumerate(base))
+        return f"{POS_SHORTCUTS[k]}  {marked}"
+    return {"inline_keyboard": [
+        [btn(lbl("last2"), "rep_pp:last2")],
+        [btn(lbl("last1"), "rep_pp:last1"), btn(lbl("first1"), "rep_pp:first1")],
+        [btn(lbl("first2"), "rep_pp:first2"), btn(lbl("firstlast"), "rep_pp:firstlast")],
+        [btn(lbl("last3"), "rep_pp:last3")],
+        [btn("🔙 رجوع", "replace")],
+    ]}
+
+
+def set_positions(chat_id, nums):
+    base = rep_tmp.get(chat_id)
+    if not isinstance(base, str):
+        states.pop(chat_id, None)
+        bot.send(chat_id, "⚠️ انتهت العملية، ابدأ من جديد.", replace_menu())
+        return
+    nums = sorted(set(nums))
+    if not nums or any(not 1 <= x <= len(base) for x in nums) or len(nums) > MAX_REPLACE_POSITIONS:
+        bot.send(chat_id, f"⚠️ أرسل رقم من 1 إلى {len(base)} "
+                          f"(أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>1,3</code>).", rep_pos_menu(base))
+        return
+    rep_tmp[chat_id] = {"base": base, "pos": nums, "sets": []}
+    states[chat_id] = "rep_chars"
+    ask_chars(chat_id)
 
 
 def ask_chars(chat_id):
@@ -812,6 +853,12 @@ def handle_callback(cq):
                               + "".join(f"• المكان {p}: <code>{cs}</code>\n" for p, cs in zip(r["pos"], rule_sets(r)))
                               + f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
                      {"inline_keyboard": [[btn("🔙 تغيير حرف", "replace")]]})
+    elif data.startswith("rep_pp:"):
+        base = rep_tmp.get(chat_id)
+        if states.get(chat_id) == "rep_pos" and isinstance(base, str):
+            set_positions(chat_id, shortcut_positions(data[7:], len(base)))
+        else:
+            bot.edit(chat_id, mid, replace_text(), replace_menu())
     elif data.startswith("rep_cs:"):
         key = data[7:]
         tmp = rep_tmp.get(chat_id)
@@ -917,22 +964,16 @@ def handle_message(msg):
             return
         rep_tmp[chat_id] = base
         states[chat_id] = "rep_pos"
-        bot.send(chat_id, f"🔢 الصيغة المرسلة: <code>{base}</code> (طولها {len(base)} حروف)\n\n"
-                          f"أرسل <b>رقم الحرف</b> الذي تريد تغييره عند الفحص (من 1 إلى {len(base)}).\n"
-                          f"تكدر تختار لحد {MAX_REPLACE_POSITIONS} أماكن سوه، مثل <code>1,3</code>", BACK)
+        numbered = "  ".join(f"{i}:{ch}" for i, ch in enumerate(base, 1))
+        bot.send(chat_id, f"🔢 الصيغة المرسلة: <code>{base}</code> (طولها {len(base)} حروف)\n"
+                          f"<code>{numbered}</code>\n\n"
+                          f"أرسل <b>رقم الحرف</b> الذي تريد تغييره (من 1 إلى {len(base)})، "
+                          f"أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>{len(base) - 1},{len(base)}</code>\n"
+                          "أو اختار من الأزرار:", rep_pos_menu(base))
         return
     if state == "rep_pos":
-        base = rep_tmp.get(chat_id)
         nums = [int(x) for x in re.findall(r"\d+", "".join(str(int(c)) if c.isdigit() else c for c in text))]
-        nums = sorted(set(nums))
-        if not base or not nums or any(not 1 <= n <= len(base) for n in nums) \
-                or len(nums) > MAX_REPLACE_POSITIONS:
-            bot.send(chat_id, f"⚠️ أرسل رقم من 1 إلى {len(base or '')} "
-                              f"(أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>1,3</code>).", BACK)
-            return
-        rep_tmp[chat_id] = {"base": base, "pos": nums, "sets": []}
-        states[chat_id] = "rep_chars"
-        ask_chars(chat_id)
+        set_positions(chat_id, nums)
         return
     if state == "rep_chars":
         chars = clean_chars(text)
