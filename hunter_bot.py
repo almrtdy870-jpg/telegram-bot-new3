@@ -115,6 +115,17 @@ def connect_session(string, label):
     c = Claimer(API_ID, API_HASH, string, label)
     apply_interval(c)
     c.start()
+    c.duplicate = False
+    if c.ready and any(o.ready and o.me and o.me.id == c.me.id for o in pool.sessions):
+        # same Telegram account twice: floods are per account, so it only hurts
+        c.duplicate = True
+        c.disconnect()
+        with store.lock:
+            if string in store.data["sessions"]:
+                store.data["sessions"].remove(string)
+                store.save()
+        event(f"تجاهلت جلسة مكررة لنفس الحساب {c.me.username or c.me.id}", "warn")
+        return c
     pool.add(c)
     if c.ready:
         event(f"تم الاتصال بالجلسة @{c.me.username or c.me.id}", "ok")
@@ -731,6 +742,11 @@ def save_session(chat_id, string):
         bot.send(chat_id, "ℹ️ هاي الجلسة مضافة أصلاً.", sessions_menu())
         return
     c = connect_session(string, "البوت")
+    if getattr(c, "duplicate", False):
+        bot.send(chat_id, f"ℹ️ الحساب <b>{c.me.username or c.me.id}</b> مضاف أصلاً بجلسة ثانية.\n"
+                          "ما ضفته مرتين، لأن الفلود ينحسب على الحساب، فالتكرار يضر وما ينفع.",
+                 sessions_menu())
+        return
     if not c.ready:
         pool.sessions.remove(c)
         c.disconnect()
@@ -743,8 +759,8 @@ def save_session(chat_id, string):
         store.data["sessions"].append(string)
         store.save()
     bot.send(chat_id, f"✅ <b>تمت إضافة الجلسة</b> @{c.me.username or c.me.id}\n\n"
-                      "💡 Render يمسح البيانات مع كل نشر. اضغط 💾 نسخة احتياطية وحط "
-                      "الجلسات بمتغير <code>TG_SESSIONS</code> حتى تبقى.", sessions_menu())
+                      "💾 تنحفظ تلقائياً بملف النسخة الاحتياطية المثبّت، وترجع وحدها بعد كل نشر.",
+             sessions_menu())
 
 
 def login_step(chat_id, state, text, mid):
@@ -961,8 +977,8 @@ def handle_callback(cq):
             bot.send(chat_id, "📭 ماكو جلسات.", BACK)
         else:
             bot.send_document(chat_id, "sessions.txt", ",".join(strings).encode(),
-                              "💾 انسخ المحتوى كله وحطه بمتغير TG_SESSIONS برندر حتى تبقى الجلسات بعد كل نشر.\n"
-                              "⚠️ لا تنطي هذا الملف لأي أحد.")
+                              "💾 نسخة من جلساتك للاحتياط بس. البوت يحفظها تلقائياً بالملف المثبّت، "
+                              "فما تحتاج تحطها برندر.\n⚠️ لا تنطي هذا الملف لأي أحد.")
     elif data in ("login", "add_string"):
         if not (API_ID and API_HASH):
             bot.send(chat_id, "⚠️ لازم تضيف API_ID و API_HASH بمتغيرات Render أول.", BACK)
