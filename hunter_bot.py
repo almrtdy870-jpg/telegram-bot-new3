@@ -1016,7 +1016,12 @@ def handle_callback(cq):
 
 def handle_message(msg):
     chat_id = str(msg["chat"]["id"])
-    if not allowed(str(msg.get("from", {}).get("id", ""))):
+    sender = msg.get("from") or {}
+    # ignore service messages (pinned file, etc.), bots and anything that isn't
+    # plain text or a document
+    if sender.get("is_bot") or "pinned_message" in msg or not ("text" in msg or "document" in msg):
+        return
+    if not allowed(str(sender.get("id", ""))):
         bot.send(chat_id, "🚫 هذا البوت خاص.")
         return
     text = (msg.get("text") or "").strip()
