@@ -206,15 +206,37 @@ def clean_chars(text: str) -> str:
     return "".join(out)
 
 
+_SHORT = {LETTERS: "a-z", DIGITS: "0-9", LETTERS + DIGITS: "a-z0-9",
+          VOWELS: "aeiou", CONSONANTS: "ساكنة"}
+
+
 def chars_label(chars: str) -> str:
-    for label, cs in REPLACE_SETS.values():
-        if chars == cs:
-            return label.split(" ")[-1] if "-" in label else label
+    if chars in _SHORT:
+        return _SHORT[chars]
     return chars if len(chars) <= 10 else chars[:10] + "…"
 
 
+def rule_sets(rule):
+    """Characters to try for each position of the rule (same order as pos).
+    `chars` may be one string for every position (old rules) or a list."""
+    pos = rule.get("pos", [])
+    chars = rule.get("chars") or LETTERS
+    if isinstance(chars, str):
+        return [chars] * len(pos)
+    sets = [c or LETTERS for c in chars]
+    return (sets + [sets[-1] if sets else LETTERS] * len(pos))[:len(pos)]
+
+
+def rule_label(rule) -> str:
+    """Short label, e.g. '1←aeo' or '1←abc 3←0-9'."""
+    return " ".join(f"{p}←{chars_label(s)}" for p, s in zip(rule.get("pos", []), rule_sets(rule)))
+
+
 def replace_count(rule) -> int:
-    return len(rule.get("chars") or LETTERS) ** len(rule.get("pos", []))
+    n = 1
+    for s in rule_sets(rule):
+        n *= len(s)
+    return n
 
 
 def replace_stream(rules, prefix="", suffix="", seen=None):
@@ -223,11 +245,12 @@ def replace_stream(rules, prefix="", suffix="", seen=None):
     seen = seen if seen is not None else set()
     for rule in rules:
         base = normalize(rule.get("base", ""))
-        pos = sorted({p - 1 for p in rule.get("pos", []) if 1 <= p <= len(base)})
-        if not base or not pos:
+        pairs = [(p - 1, s) for p, s in zip(rule.get("pos", []), rule_sets(rule))
+                 if 1 <= p <= len(base)]
+        if not base or not pairs:
             continue
-        chars_set = rule.get("chars") or LETTERS
-        for combo in itertools.product(chars_set, repeat=len(pos)):
+        pos = [p for p, _ in pairs]
+        for combo in itertools.product(*[s for _, s in pairs]):
             chars = list(base)
             for p, ch in zip(pos, combo):
                 chars[p] = ch

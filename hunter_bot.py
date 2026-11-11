@@ -29,7 +29,8 @@ from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
 from hunter.generator import (MAX_REPLACE_POSITIONS, PRESETS, REPLACE_SETS, chars_label,
-                              clean_chars, replace_count, replace_stream,
+                              clean_chars, replace_count, replace_stream, rule_label,
+                              rule_sets,
                               similar_stream,
                               space_size, validate_template)
 from hunter.rules import is_valid, normalize
@@ -284,8 +285,7 @@ def replace_menu():
     rows = [[btn("➕ إضافة صيغة جديدة", "rep_add")]]
     for i, r in enumerate(store.settings.get("replace_rules", [])):
         pos = ",".join(str(p) for p in r["pos"])
-        rows.append([btn(f"🛠 {r['base']} ({pos} ← {chars_label(r.get('chars') or 'abcdefghijklmnopqrstuvwxyz')})",
-                         f"rep_info:{i}"),
+        rows.append([btn(f"🛠 {r['base']} ({rule_label(r)})", f"rep_info:{i}"),
                      btn("❌ حذف", f"rep_del:{i}")])
     if store.settings.get("replace_rules"):
         rows.append([btn("▶️ صيد هاي الصيغ", "rep_start")])
@@ -294,8 +294,10 @@ def replace_menu():
     return {"inline_keyboard": rows}
 
 
-def rep_chars_menu():
+def rep_chars_menu(same=False):
     rows, row = [], []
+    if same:
+        rows.append([btn("♻️ نفس حروف المكان السابق", "rep_cs:same")])
     for key, (label, _cs) in REPLACE_SETS.items():
         row.append(btn(label, f"rep_cs:{key}"))
         if len(row) == 2:
@@ -307,14 +309,37 @@ def rep_chars_menu():
     return {"inline_keyboard": rows}
 
 
-def finish_rule(chat_id, chars):
+def ask_chars(chat_id):
+    """Ask which characters to try for the next position of the rule being built."""
+    tmp = rep_tmp[chat_id]
+    idx = len(tmp["sets"])
+    p = tmp["pos"][idx]
+    marked = "".join(f"[{ch}]" if k + 1 == p else ch for k, ch in enumerate(tmp["base"]))
+    head = f"✍️ <b>المكان {p}</b>" + (f"  ({idx + 1} من {len(tmp['pos'])})" if len(tmp["pos"]) > 1 else "")
+    done = "".join(f"\n• المكان {q}: <code>{s}</code>" for q, s in zip(tmp["pos"], tmp["sets"]))
+    bot.send(chat_id, f"{head}\n<code>{marked}</code>{done}\n\n"
+                      "شنو الحروف اللي تريد تجربها بهذا المكان؟\n"
+                      "• <b>اكتبها بنفسك</b> ودزها، مثل <code>aeo</code> أو <code>xyz</code> أو <code>a b c 7</code>\n"
+                      "• أو اختار من الأزرار:", rep_chars_menu(same=idx > 0))
+
+
+def add_chars(chat_id, chars):
     tmp = rep_tmp.get(chat_id)
-    states.pop(chat_id, None)
-    rep_tmp.pop(chat_id, None)
     if not isinstance(tmp, dict):
+        states.pop(chat_id, None)
         bot.send(chat_id, "⚠️ انتهت العملية، ابدأ من جديد.", replace_menu())
         return
-    rule = {"base": tmp["base"], "pos": tmp["pos"], "chars": chars}
+    tmp["sets"].append(chars)
+    if len(tmp["sets"]) < len(tmp["pos"]):
+        ask_chars(chat_id)
+    else:
+        finish_rule(chat_id)
+
+
+def finish_rule(chat_id):
+    tmp = rep_tmp.pop(chat_id, None)
+    states.pop(chat_id, None)
+    rule = {"base": tmp["base"], "pos": tmp["pos"], "chars": tmp["sets"]}
     n = replace_count(rule)
     if n > 50000:
         bot.send(chat_id, f"⚠️ هاي الصيغة تطلع {n:,} يوزر وهواية. قلل الأماكن أو الحروف.", replace_menu())
@@ -322,11 +347,10 @@ def finish_rule(chat_id, chars):
     rules = list(store.settings.get("replace_rules", []))
     rules.append(rule)
     store.set("replace_rules", rules)
-    pos = ",".join(str(p) for p in rule["pos"])
+    per_pos = "".join(f"• المكان {p}: <code>{s}</code>\n" for p, s in zip(rule["pos"], rule_sets(rule)))
     bot.send(chat_id, "✅ <b>تمت إضافة الصيغة</b>\n\n"
                       f"• الصيغة: <code>{rule['base']}</code>\n"
-                      f"• المكان: {pos}\n"
-                      f"• الحروف: <code>{chars}</code>\n"
+                      f"{per_pos}"
                       f"• عدد اليوزرات: {n:,}\n\n"
                       + replace_text().split("\n\n", 2)[-1], replace_menu())
 
@@ -785,13 +809,16 @@ def handle_callback(cq):
             marked = "".join(f"[{ch}]" if k + 1 in r["pos"] else ch for k, ch in enumerate(base))
             sample = " ".join(f"<code>{n}</code>" for n in itertools.islice(replace_stream([r]), 6))
             bot.send(chat_id, f"🛠 <b>{base}</b>\nالأحرف اللي تتغيّر: <code>{marked}</code>\n"
-                              f"الحروف المجرّبة: <code>{r.get('chars') or 'a-z'}</code>\n"
-                              f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
+                              + "".join(f"• المكان {p}: <code>{cs}</code>\n" for p, cs in zip(r["pos"], rule_sets(r)))
+                              + f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
                      {"inline_keyboard": [[btn("🔙 تغيير حرف", "replace")]]})
     elif data.startswith("rep_cs:"):
         key = data[7:]
-        if states.get(chat_id) == "rep_chars" and key in REPLACE_SETS:
-            finish_rule(chat_id, REPLACE_SETS[key][1])
+        tmp = rep_tmp.get(chat_id)
+        if states.get(chat_id) == "rep_chars" and key == "same" and isinstance(tmp, dict) and tmp["sets"]:
+            add_chars(chat_id, tmp["sets"][-1])
+        elif states.get(chat_id) == "rep_chars" and key in REPLACE_SETS:
+            add_chars(chat_id, REPLACE_SETS[key][1])
         else:
             bot.edit(chat_id, mid, replace_text(), replace_menu())
     elif data.startswith("rep_del:"):
@@ -903,20 +930,17 @@ def handle_message(msg):
             bot.send(chat_id, f"⚠️ أرسل رقم من 1 إلى {len(base or '')} "
                               f"(أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>1,3</code>).", BACK)
             return
-        rep_tmp[chat_id] = {"base": base, "pos": nums}
+        rep_tmp[chat_id] = {"base": base, "pos": nums, "sets": []}
         states[chat_id] = "rep_chars"
-        marked = "".join(f"[{ch}]" if k + 1 in nums else ch for k, ch in enumerate(base))
-        bot.send(chat_id, f"✍️ المكان اللي يتغيّر: <code>{marked}</code>\n\n"
-                          "شنو الحروف اللي تريد تجربها بهذا المكان؟\n"
-                          "• <b>اكتبها بنفسك</b> ودزها، مثل <code>aeo</code> أو <code>xyz</code> أو <code>a b c 7</code>\n"
-                          "• أو اختار من الأزرار:", rep_chars_menu())
+        ask_chars(chat_id)
         return
     if state == "rep_chars":
         chars = clean_chars(text)
         if not chars:
-            bot.send(chat_id, "⚠️ اكتب حروف إنجليزية صغيرة أو أرقام أو _ ، مثل <code>aeo</code>", rep_chars_menu())
+            bot.send(chat_id, "⚠️ اكتب حروف إنجليزية صغيرة أو أرقام أو _ ، مثل <code>aeo</code>",
+                     rep_chars_menu(same=bool(isinstance(rep_tmp.get(chat_id), dict) and rep_tmp[chat_id]["sets"])))
             return
-        finish_rule(chat_id, chars)
+        add_chars(chat_id, chars)
         return
     if state == "claim":
         states.pop(chat_id, None)
