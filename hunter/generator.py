@@ -265,13 +265,121 @@ def replace_stream(rules, prefix="", suffix="", seen=None, shuffle=True):
     yield from names
 
 
-def make_stream(settings, seen=None):
+MAX_RULES = 1000
+MAX_RULE_NAMES = 50_000
+WILDCARDS = "*?"
+
+
+def masked(rule) -> str:
+    """Formula with * at the changing positions, e.g. boss**."""
+    pos = set(rule.get("pos", []))
+    return "".join("*" if i + 1 in pos else ch for i, ch in enumerate(rule.get("base", "")))
+
+
+def rule_key(rule):
+    return (masked(rule), tuple(rule_sets(rule)))
+
+
+def _named_set(token):
+    t = token.lower()
+    return {"a-z": LETTERS, "0-9": DIGITS, "a-z0-9": LETTERS + DIGITS, "0-9a-z": LETTERS + DIGITS,
+            "aeiou": VOWELS}.get(t) or clean_chars(t)
+
+
+def parse_rule_line(line):
+    """Parse one bulk line into a rule. Returns (rule, None) or (None, error).
+
+    boss**            -> the * places get a-z
+    boss** abc        -> both places get 'abc'
+    boss** abc 0-9    -> first * gets abc, second gets 0-9
+    bosspo 5,6 [sets] -> same, using positions instead of *
+    """
+    line = "".join(str(int(c)) if c.isdigit() else c for c in line.strip())
+    parts = line.replace("،", ",").split()
+    if not parts:
+        return None, None
+    word, rest = parts[0].lower().lstrip("@"), parts[1:]
+    if any(ch in WILDCARDS for ch in word):
+        pos = [i + 1 for i, ch in enumerate(word) if ch in WILDCARDS]
+        base = "".join("a" if ch in WILDCARDS else ch for ch in word)
+    else:
+        if not rest or not all(c.isdigit() or c == "," for c in rest[0]):
+            return None, "حط * مكان الحرف اللي يتغيّر (مثل boss**) أو اكتب الأماكن (مثل bosspo 5,6)"
+        pos = sorted({int(x) for x in rest[0].split(",") if x})
+        base, rest = word, rest[1:]
+    if not (5 <= len(base) <= 32) or not base.isascii() or not all(c.isalnum() or c == "_" for c in base):
+        return None, "الصيغة لازم 5-32 حرف إنجليزي/رقم/_"
+    if not pos or any(not 1 <= p <= len(base) for p in pos):
+        return None, "الأماكن غلط"
+    if len(pos) > MAX_REPLACE_POSITIONS:
+        return None, f"أقصى شي {MAX_REPLACE_POSITIONS} أماكن"
+    if not rest:
+        sets = [LETTERS] * len(pos)
+    elif len(rest) == 1:
+        sets = [_named_set(rest[0])] * len(pos)
+    elif len(rest) == len(pos):
+        sets = [_named_set(t) for t in rest]
+    else:
+        return None, "عدد مجموعات الحروف لازم 1 أو بعدد الأماكن"
+    if any(not s for s in sets):
+        return None, "الحروف غلط"
+    rule = {"base": base, "pos": pos, "chars": sets}
+    if replace_count(rule) > MAX_RULE_NAMES:
+        return None, f"تطلع أكثر من {MAX_RULE_NAMES:,} يوزر"
+    return rule, None
+
+
+def replace_cycle(settings, on_round=None):
+    """Endless 'change letter' hunt over ALL rules at once, in random order.
+
+    Rules added or deleted while hunting are picked up immediately (the bot
+    bumps settings['replace_rev']). When every name was checked, a new round
+    starts from the beginning."""
+    rnd, queue, loaded, seen = 1, [], set(), set()
+    rev = object()
+    fresh_round = True  # nothing yielded yet in the current round
+    while True:
+        cur = settings.get("replace_rev", 0)
+        if cur != rev:
+            rev = cur
+            prefix, suffix = settings.get("prefix", ""), settings.get("suffix", "")
+            rules = {rule_key(r): r for r in settings.get("replace_rules", [])}
+            if loaded - rules.keys():
+                queue = [(k, n) for k, n in queue if k in rules]
+                loaded &= rules.keys()
+            added = False
+            for k, r in rules.items():
+                if k not in loaded:
+                    loaded.add(k)
+                    queue.extend((k, n) for n in replace_stream([r], prefix, suffix, shuffle=False))
+                    added = True
+            if added:
+                random.shuffle(queue)
+        if not queue:
+            if fresh_round or not settings.get("replace_rules"):
+                return  # nothing (left) to check
+            rnd += 1
+            seen.clear()
+            loaded = set()
+            rev = object()  # force a full reload for the new round
+            fresh_round = True
+            if on_round:
+                on_round(rnd)
+            continue
+        fresh_round = False
+        _k, name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        yield name
+
+
+def make_stream(settings, seen=None, on_round=None):
     mode = settings.get("mode", "preset")
     prefix = settings.get("prefix", "")
     suffix = settings.get("suffix", "")
     if mode == "replace":
-        # fresh `seen` so re-running the same rules re-checks everything
-        return replace_stream(settings.get("replace_rules", []), prefix, suffix)
+        return replace_cycle(settings, on_round)
     if mode == "similar":
         # fresh `seen` so a repeated search re-checks everything
         return similar_stream(settings.get("similar_base", ""), prefix, suffix)

@@ -34,6 +34,7 @@ class Hunter:
         self._threads = []
         self.seen = set()
         self.last_checked = ""
+        self.reported = set()
         self.verify_q = []   # need an exact account check
         self.claim_q = []    # confirmed free, waiting for claim flood to end
         threading.Thread(target=self._queue_worker, daemon=True).start()
@@ -48,7 +49,8 @@ class Hunter:
         if self.running:
             return False
         self.stats = self._new_stats()
-        self._gen = make_stream(self.store.settings, self.seen)
+        self._gen = make_stream(self.store.settings, self.seen,
+                                on_round=lambda r: event(f"🔁 خلصت الدورة، بدت الدورة {r}", "info"))
         self.running = True
         n = max(1, min(int(self.store.settings.get("threads", 5)), 50))
         self._threads = [threading.Thread(target=self._worker, daemon=True) for _ in range(n)]
@@ -181,6 +183,10 @@ class Hunter:
                 time.sleep(delay)
 
     def _confirmed(self, name, source, claimer):
+        # endless rounds re-check names: report/claim each one only once
+        if name in self.reported:
+            return
+        self.reported.add(name)
         mode = self.store.settings.get("claim_mode", "off")
         if mode != "off" and claimer is not None and claimer.ready:
             self._try_claim(name, source, claimer)

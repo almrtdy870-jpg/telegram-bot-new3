@@ -7,7 +7,8 @@ import time
 DEFAULT_SETTINGS = {
     "mode": "preset",          # preset | template | words | similar
     "similar_base": "",
-    "replace_rules": [],       # [{"base": "vcvcv", "pos": [1]}]
+    "replace_rules": [],       # [{"base": "vcvcv", "pos": [1], "chars": ["aeo"]}]
+    "replace_rev": 0,          # bumped on every rules change (live reload)
     "preset": "five",
     "template": "LLLLL",
     "prefix": "",

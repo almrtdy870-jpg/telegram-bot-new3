@@ -28,7 +28,7 @@ from hunter import checker
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
-from hunter.generator import (MAX_REPLACE_POSITIONS, PRESETS, REPLACE_SETS, chars_label,
+from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS, chars_label,
                               clean_chars, replace_count, replace_stream, rule_label,
                               rule_sets,
                               similar_stream,
@@ -266,6 +266,21 @@ def main_menu():
     ]}
 
 
+RULES_PER_PAGE = 8
+
+
+def set_rules(rules):
+    """Save rules and bump the revision so a running hunt picks them up live."""
+    with store.lock:
+        store.data["settings"]["replace_rules"] = rules
+        store.data["settings"]["replace_rev"] = store.settings.get("replace_rev", 0) + 1
+        store.save()
+
+
+def replace_live():
+    return hunter.running and store.settings["mode"] == "replace"
+
+
 def replace_text():
     rules = store.settings.get("replace_rules", [])
     text = ("🔤 <b>تغيير حرف بالطلب</b>\n\n"
@@ -275,23 +290,56 @@ def replace_text():
     if not rules:
         return text + "📭 ماكو صيغ بعد، اضغط ➕ إضافة صيغة جديدة."
     total = sum(replace_count(r) for r in rules)
-    text += f"• الصيغ المضافة: <b>{len(rules)}</b>\n• عدد اليوزرات: <b>{total:,}</b>"
-    if store.settings["mode"] == "replace":
-        text += "\n• ✅ هذا هو نوع الصيد الحالي"
+    text += (f"• الصيغ المضافة: <b>{len(rules)}</b> / {MAX_RULES}\n"
+             f"• عدد اليوزرات بالدورة: <b>{total:,}</b>\n"
+             "• 🔁 يصيد كل الصيغ سوه بشكل دائري، وإذا خلص يرجع من جديد")
+    if replace_live():
+        text += "\n• 🟢 <b>الصيد شغّال</b> — أي صيغة تضيفها تدخل فوراً"
     return text
 
 
-def replace_menu():
-    rows = [[btn("➕ إضافة صيغة جديدة", "rep_add")]]
-    for i, r in enumerate(store.settings.get("replace_rules", [])):
-        pos = ",".join(str(p) for p in r["pos"])
-        rows.append([btn(f"🛠 {r['base']} ({rule_label(r)})", f"rep_info:{i}"),
+def replace_menu(page=0):
+    rules = store.settings.get("replace_rules", [])
+    pages = max(1, (len(rules) + RULES_PER_PAGE - 1) // RULES_PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows = [[btn("➕ إضافة صيغة", "rep_add"), btn("📥 إضافة جماعية", "rep_bulk")]]
+    start = page * RULES_PER_PAGE
+    for i, r in enumerate(rules[start:start + RULES_PER_PAGE], start):
+        rows.append([btn(f"🛠 {masked(r)} ({rule_label(r)})", f"rep_info:{i}"),
                      btn("❌ حذف", f"rep_del:{i}")])
-    if store.settings.get("replace_rules"):
-        rows.append([btn("▶️ صيد هاي الصيغ", "rep_start")])
+    if pages > 1:
+        rows.append([btn("◀️", f"rep_page:{page - 1}") if page > 0 else btn(" ", "noop"),
+                     btn(f"{page + 1}/{pages}", "noop"),
+                     btn("▶️", f"rep_page:{page + 1}") if page < pages - 1 else btn(" ", "noop")])
+    if rules:
+        if replace_live():
+            rows.append([btn("🟢 الصيد شغّال على كل الصيغ", "menu")])
+        else:
+            rows.append([btn("▶️ صيد كل الصيغ (دائري)", "rep_start")])
         rows.append([btn("🗑 مسح الكل", "rep_clear")])
     rows.append([btn("🔙 رجوع", "menu")])
     return {"inline_keyboard": rows}
+
+
+def add_rules(new_rules):
+    """Append rules (skipping duplicates / over the limit). Return (added, skipped)."""
+    rules = list(store.settings.get("replace_rules", []))
+    keys = {rule_key(r) for r in rules}
+    added = skipped = 0
+    for r in new_rules:
+        if len(rules) >= MAX_RULES or rule_key(r) in keys:
+            skipped += 1
+            continue
+        rules.append(r)
+        keys.add(rule_key(r))
+        added += 1
+    if added:
+        set_rules(rules)
+    return added, skipped
+
+
+def live_note():
+    return "\n🟢 انضافت للصيد الشغّال مباشرة." if replace_live() else ""
 
 
 def rep_chars_menu(same=False):
@@ -385,15 +433,16 @@ def finish_rule(chat_id):
     if n > 50000:
         bot.send(chat_id, f"⚠️ هاي الصيغة تطلع {n:,} يوزر وهواية. قلل الأماكن أو الحروف.", replace_menu())
         return
-    rules = list(store.settings.get("replace_rules", []))
-    rules.append(rule)
-    store.set("replace_rules", rules)
+    added, _ = add_rules([rule])
+    if not added:
+        bot.send(chat_id, f"⚠️ هاي الصيغة موجودة أصلاً، أو وصلت الحد ({MAX_RULES} صيغة).", replace_menu())
+        return
     per_pos = "".join(f"• المكان {p}: <code>{s}</code>\n" for p, s in zip(rule["pos"], rule_sets(rule)))
     bot.send(chat_id, "✅ <b>تمت إضافة الصيغة</b>\n\n"
-                      f"• الصيغة: <code>{rule['base']}</code>\n"
+                      f"• الصيغة: <code>{masked(rule)}</code>\n"
                       f"{per_pos}"
-                      f"• عدد اليوزرات: {n:,}\n\n"
-                      + replace_text().split("\n\n", 2)[-1], replace_menu())
+                      f"• عدد اليوزرات: {n:,}{live_note()}\n\n"
+                      + replace_text().split("\n\n", 2)[-1], replace_menu(10 ** 6))
 
 
 def settings_menu():
@@ -849,7 +898,7 @@ def handle_callback(cq):
             base = r["base"]
             marked = "".join(f"[{ch}]" if k + 1 in r["pos"] else ch for k, ch in enumerate(base))
             sample = " ".join(f"<code>{n}</code>" for n in itertools.islice(replace_stream([r]), 6))
-            bot.send(chat_id, f"🛠 <b>{base}</b>\nالأحرف اللي تتغيّر: <code>{marked}</code>\n"
+            bot.send(chat_id, f"🛠 <b>{masked(r)}</b>\nالأحرف اللي تتغيّر: <code>{marked}</code>\n"
                               + "".join(f"• المكان {p}: <code>{cs}</code>\n" for p, cs in zip(r["pos"], rule_sets(r)))
                               + f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
                      {"inline_keyboard": [[btn("🔙 تغيير حرف", "replace")]]})
@@ -873,24 +922,43 @@ def handle_callback(cq):
         i = int(data[8:])
         if 0 <= i < len(rules):
             rules.pop(i)
-            store.set("replace_rules", rules)
-        bot.edit(chat_id, mid, replace_text(), replace_menu())
+            set_rules(rules)
+        bot.edit(chat_id, mid, replace_text(), replace_menu(i // RULES_PER_PAGE))
+    elif data.startswith("rep_page:"):
+        bot.edit(chat_id, mid, replace_text(), replace_menu(int(data[9:])))
+    elif data == "noop":
+        pass
+    elif data == "rep_bulk":
+        states[chat_id] = "rep_bulk"
+        bot.send(chat_id, "📥 <b>إضافة جماعية</b> (لحد 1000 صيغة)\n\n"
+                          "دز الصيغ كل وحدة بسطر، أو ارفع ملف <code>.txt</code>.\n"
+                          "حط <code>*</code> مكان الحرف اللي يتغيّر:\n\n"
+                          "<code>boss**</code>  ← آخر حرفين a-z\n"
+                          "<code>*cvcv</code>  ← أول حرف a-z\n"
+                          "<code>boss** aeo</code>  ← الحرفين من aeo\n"
+                          "<code>boss** abc 0-9</code>  ← الأول من abc والثاني أرقام\n"
+                          "<code>bosspo 5,6</code>  ← نفس boss** بالأرقام\n\n"
+                          "مجموعات جاهزة: <code>a-z</code> <code>0-9</code> <code>a-z0-9</code> <code>aeiou</code>", BACK)
     elif data == "rep_clear":
         bot.edit(chat_id, mid, "❓ متأكد تريد تمسح كل الصيغ؟",
                  {"inline_keyboard": [[btn("✅ نعم", "rep_clear_ok"), btn("❌ لا", "replace")]]})
     elif data == "rep_clear_ok":
-        store.set("replace_rules", [])
+        set_rules([])
         bot.edit(chat_id, mid, replace_text(), replace_menu())
     elif data == "rep_start":
         if not store.settings.get("replace_rules"):
             bot.edit(chat_id, mid, replace_text(), replace_menu())
             return
+        if replace_live():
+            bot.edit(chat_id, mid, replace_text(), replace_menu())
+            return
         if hunter.running:
-            bot.send(chat_id, "⚠️ الصيد شغّال، أوقفه أول وبعدين اضغط ▶️ صيد هاي الصيغ.", replace_menu())
+            bot.send(chat_id, f"⚠️ في صيد ثاني شغّال ({html.escape(target_label(store.settings))}). "
+                              "أوقفه أول من ⏹ إيقاف الصيد، وبعدين اضغط ▶️ صيد كل الصيغ.", replace_menu())
             return
         store.set("mode", "replace")
         total = sum(replace_count(r) for r in store.settings["replace_rules"])
-        event(f"🔤 تغيير حرف: {len(store.settings['replace_rules'])} صيغة ({total:,})", "info")
+        event(f"🔤 تغيير حرف: {len(store.settings['replace_rules'])} صيغة ({total:,}) - دائري", "info")
         err = start_hunt(chat_id, mid)
         if err:
             bot.send(chat_id, err, main_menu())
@@ -947,7 +1015,7 @@ def handle_message(msg):
                          daemon=True).start()
         return
 
-    if "document" in msg and state == "words":
+    if "document" in msg and state in ("words", "rep_bulk"):
         content = bot.download_text(msg["document"]["file_id"])
         if content is None:
             bot.send(chat_id, "⚠️ ما گدرت أقرأ الملف (الحد 5MB).")
@@ -956,6 +1024,28 @@ def handle_message(msg):
 
     if state == "similar":
         start_similar(chat_id, text)
+        return
+    if state == "rep_bulk":
+        states.pop(chat_id, None)
+        rules, bad = [], []
+        for n, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            rule, err = parse_rule_line(line)
+            if rule:
+                rules.append(rule)
+            elif err:
+                bad.append(f"{n}: <code>{html.escape(line.strip()[:30])}</code> — {err}")
+        added, skipped = add_rules(rules)
+        total = sum(replace_count(r) for r in store.settings.get("replace_rules", []))
+        text_out = (f"📥 <b>الإضافة الجماعية</b>\n\n✅ انضافت: <b>{added}</b> صيغة"
+                    + (f"\n♻️ مكررة/فوق الحد: {skipped}" if skipped else "")
+                    + (f"\n⚠️ غلط: {len(bad)}" if bad else "")
+                    + f"\n• المجموع: {len(store.settings.get('replace_rules', []))} صيغة ({total:,} يوزر بالدورة)"
+                    + (live_note() if added else ""))
+        if bad:
+            text_out += "\n\n" + "\n".join(bad[:10]) + ("\n..." if len(bad) > 10 else "")
+        bot.send(chat_id, text_out, replace_menu(10 ** 6))
         return
     if state == "rep_base":
         base = normalize(text.split()[0]) if text.split() else ""
