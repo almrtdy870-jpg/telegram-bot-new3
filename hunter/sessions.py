@@ -8,6 +8,7 @@ account that still has room for public channels.
 import asyncio
 import itertools
 import threading
+import time
 
 from .claimer import Claimer
 
@@ -23,6 +24,9 @@ class SessionPool:
         self.sessions = []          # list[Claimer]
         self._lock = threading.Lock()
         self._rr = itertools.count()
+        # names an account already confirmed as not free -> {name: time}
+        # (endless rounds would otherwise burn the daily check quota on them)
+        self.verdicts = {}
 
     # -- membership -----------------------------------------------------
     def add(self, claimer: Claimer):
@@ -93,7 +97,21 @@ class SessionPool:
         a = self.active
         return sum(c.interval for c in a) / len(a) if a else 0
 
+    VERDICT_TTL = 6 * 3600
+    VERDICT_MAX = 300_000
+
     def check(self, username):
+        cached = self.verdicts.get(username)
+        if cached and time.time() - cached[1] < self.VERDICT_TTL:
+            return cached[0]
+        res = self._check(username)
+        if res is not None and res != "available":
+            if len(self.verdicts) >= self.VERDICT_MAX:
+                self.verdicts.clear()
+            self.verdicts[username] = (res, time.time())
+        return res
+
+    def _check(self, username):
         # use the account that is free soonest instead of queueing on one
         free = [c for c in self._rotation() if not c.check_flood_left]
         with self._lock:  # pick + book atomically so threads spread out

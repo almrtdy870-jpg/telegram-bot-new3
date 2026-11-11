@@ -78,6 +78,7 @@ class Claimer:
     def __init__(self, api_id, api_hash, session_string, label="session"):
         self.label = label
         self.full = False  # hit the public-channel limit
+        self.frozen = False  # Telegram froze this account
         self.api_id = int(api_id)
         self.api_hash = api_hash
         self.session_string = session_string
@@ -100,6 +101,17 @@ class Claimer:
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
 
     # -- plumbing -------------------------------------------------------
+    def _mark_frozen(self, exc):
+        if "FROZEN" not in str(exc).upper() or self.frozen:
+            return False
+        self.frozen = True
+        self.ready = False  # stop using it so it doesn't get worse
+        self.last_error = "الحساب مجمّد من تليجرام"
+        name = (f"@{self.me.username}" if self.me and self.me.username
+                else str(self.me.id) if self.me else self.label)
+        error(f"🥶 الحساب {name} مجمّد من تليجرام - انوقف استخدامه. احذفه وقدّم طعن من @SpamBot")
+        return True
+
     def _run(self, coro, timeout=60):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
 
@@ -214,6 +226,8 @@ class Claimer:
         except errors.RPCError as e:
             if "PURCHASE_AVAILABLE" in str(e).upper():
                 return checker.FRAGMENT
+            if self._mark_frozen(e):
+                return None
             raise
 
     # -- claim ----------------------------------------------------------
@@ -253,6 +267,8 @@ class Claimer:
             self.claim_flood_until = time.time() + e.seconds
             return False, f"FLOOD:{e.seconds}"
         except errors.RPCError as e:
+            if self._mark_frozen(e):
+                return False, "الحساب مجمّد من تليجرام"
             name = type(e).__name__
             if "TooMuch" in name or "TOO_MUCH" in str(e).upper():
                 self._holder = None

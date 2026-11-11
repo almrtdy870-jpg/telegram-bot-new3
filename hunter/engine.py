@@ -13,7 +13,7 @@ from .claimer import fmt_wait
 from .events import error, event
 from .generator import make_stream
 
-MAX_QUEUE = 1000
+MAX_QUEUE = 150  # keep it small: every queued name costs a rate-limited account check
 
 
 class Hunter:
@@ -82,8 +82,10 @@ class Hunter:
 
     def _queue_verify(self, name):
         with self._q_lock:
-            if name not in self.verify_q and len(self.verify_q) < MAX_QUEUE:
+            if name not in self.verify_q:
                 self.verify_q.append(name)
+                if len(self.verify_q) > MAX_QUEUE:
+                    del self.verify_q[0]  # drop the oldest, keep the freshest
 
     def _pop(self, q):
         with self._q_lock:

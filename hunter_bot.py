@@ -34,7 +34,7 @@ from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
-from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS, chars_label,
+from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS,
                               clean_chars, replace_count, replace_stream, rule_label,
                               rule_sets,
                               similar_stream,
@@ -551,7 +551,7 @@ def sessions_menu():
             icon = "🧊" if c.flood_left else ("🈵" if c.full else "🟢")
             name = f"@{c.me.username}" if c.me.username else str(c.me.id)
         else:
-            icon, name = "🔴", "غير متصل"
+            icon, name = ("🥶", "مجمّد") if getattr(c, "frozen", False) else ("🔴", "غير متصل")
         rows.append([btn(f"{icon} {name}", f"sess:{i}"), btn("🗑", f"sessdel:{i}")])
     rows.append([btn("➕ إضافة بالرقم", "login"), btn("➕ إضافة بكود جلسة", "add_string")])
     rows.append([btn("💾 نسخة احتياطية", "sess_backup"), btn("🔄 تحديث", "sessions")])
