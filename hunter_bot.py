@@ -15,6 +15,7 @@ Environment variables:
     TZ_OFFSET       optional - hours added to UTC for displayed times (default 3)
     PORT            web port for webhook mode (default 10000)
 """
+import atexit
 import html
 import itertools
 import os
@@ -25,6 +26,7 @@ import time
 from flask import Flask, request
 
 from hunter import checker
+from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
@@ -55,6 +57,11 @@ store = Store(os.environ.get("DATA_FILE", "data/hunter.json"))
 store.data.setdefault("sessions", [])
 store.data.setdefault("total_checks", 0)
 app = Flask(__name__)
+
+# where the automatic Telegram backup lives (owner's private chat with the bot)
+BACKUP_CHAT = (os.environ.get("BACKUP_CHAT_ID", "").strip()
+               or next(iter(sorted(ADMIN_IDS)), None) or store.data.get("owner"))
+backup = TelegramBackup(bot, store, BACKUP_CHAT)
 
 states = {}   # chat id -> pending input state
 rep_tmp = {}  # chat id -> base word while choosing positions
@@ -138,6 +145,9 @@ def on_found(username, status, source, claim_result):
 def on_status(_summary=None):
     """Live dashboard: keep editing the dashboard message while hunting."""
     chat_id, msg_id = hunt_ctx["chat_id"], hunt_ctx["status_msg"]
+    if not hunter.running and store.data.get("resume"):
+        store.data["resume"] = False       # hunt ended (finished or stopped)
+        store.save()
     if not chat_id:
         return
     if msg_id:
@@ -204,7 +214,8 @@ def dashboard():
                  f"• آخر يوزر: <code>{hunter.last_checked or '-'}</code>\n")
     text += (f"• آخر تحديث: {clock()}\n"
              f"• الأخطاء: {errors.count}\n"
-             f"• مدة التشغيل: {hms(time.time() - BOOT)}\n")
+             f"• مدة التشغيل: {hms(time.time() - BOOT)}\n"
+             f"• 💾 آخر نسخة احتياطية: {clock(backup.last_backup) if backup.last_backup else '—'}\n")
     if pool.ready and pool.flood_left:
         text += "• 🧊 فلود:"
         if pool.check_flood_left:
@@ -457,7 +468,7 @@ def settings_menu():
          btn(f"🔒 الحجز: {CLAIM_LABELS[s['claim_mode']]}", "cycle_claim")],
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
-        [btn("❓ شرح القوالب", "help")],
+        [btn("❓ شرح القوالب", "help"), btn("💾 نسخ احتياطي الحين", "backup_now")],
         [btn("🔙 رجوع", "menu")],
     ]}
 
@@ -537,6 +548,8 @@ def allowed(user_id: str) -> bool:
     if owner is None:
         store.data["owner"] = user_id
         store.save()
+        if not backup.chat_id:
+            backup.chat_id = user_id
         return True
     return owner == user_id
 
@@ -553,6 +566,10 @@ def start_hunt(chat_id, mid=None):
         msg = bot.send(chat_id, "🚀 جاري بدء الصيد...")
         mid = msg["message_id"] if msg else None
     hunt_ctx["status_msg"] = mid
+    with store.lock:
+        store.data["resume"] = True        # restart the hunt after a redeploy
+        store.data["resume_chat"] = chat_id
+        store.save()
     hunter.start()
     on_status()
     if not pool.ready and store.settings.get("notify", "claimed") != "off":
@@ -962,6 +979,10 @@ def handle_callback(cq):
         err = start_hunt(chat_id, mid)
         if err:
             bot.send(chat_id, err, main_menu())
+    elif data == "backup_now":
+        ok = backup.backup(force=True)
+        bot.send(chat_id, "💾 تم حفظ نسخة احتياطية (الملف المثبّت بالمحادثة)." if ok
+                 else f"⚠️ فشل الحفظ: {html.escape(backup.last_error)}", settings_menu())
     elif data == "cycle_notify":
         order = ["claimed", "off", "all"]
         cur = store.settings.get("notify", "claimed")
@@ -1133,8 +1154,36 @@ def poll_forever():
             threading.Thread(target=dispatch, args=(upd,), daemon=True).start()
 
 
+def startup():
+    """Restore the Telegram backup, reconnect sessions, resume the hunt."""
+    try:
+        if backup.restore():
+            event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
+    except Exception as e:  # noqa: BLE001
+        error(f"فشل الاسترجاع: {e}")
+    load_sessions()
+    if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:
+        chat_id = store.data["resume_chat"]
+        bot.send(chat_id, "♻️ <b>البوت رجع اشتغل</b> بعد إعادة تشغيل الخادم، والصيد رجع يشتغل وحده.")
+        event("♻️ استئناف الصيد تلقائياً", "ok")
+        err = start_hunt(chat_id)
+        if err:
+            bot.send(chat_id, err, main_menu())
+    if backup.chat_id:
+        backup.backup(force=not backup.message_id)
+    backup.run_forever()
+
+
+def _final_backup():
+    try:
+        backup.backup()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+atexit.register(_final_backup)
 event("تم تشغيل البوت", "ok")
-threading.Thread(target=load_sessions, daemon=True).start()
+threading.Thread(target=startup, daemon=True).start()
 
 # under gunicorn (webhook mode) register the webhook on import
 if WEBHOOK_URL:

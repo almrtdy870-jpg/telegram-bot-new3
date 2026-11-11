@@ -29,12 +29,15 @@ class Store:
         self.path = path
         self.lock = threading.RLock()
         self.data = {"owner": None, "settings": dict(DEFAULT_SETTINGS), "found": []}
+        self.dirty = False      # changed since the last Telegram backup
+        self.file_saved_at = 0  # saved_at of the data file found at start-up
         if os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:
                     loaded = json.load(f)
                 self.data.update(loaded)
                 self.data["settings"] = {**DEFAULT_SETTINGS, **loaded.get("settings", {})}
+                self.file_saved_at = loaded.get("saved_at", 0)
             except (OSError, ValueError):
                 pass
 
@@ -43,10 +46,29 @@ class Store:
             d = os.path.dirname(self.path)
             if d:
                 os.makedirs(d, exist_ok=True)
+            self.data["saved_at"] = time.time()
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
+            self.dirty = True
+
+    def dump(self) -> bytes:
+        with self.lock:
+            return json.dumps(self.data, ensure_ascii=False).encode()
+
+    def load_backup(self, loaded: dict) -> bool:
+        """Replace current data with a backup if the backup is newer."""
+        with self.lock:
+            # compare with the file we started from: changes made in the few
+            # seconds before the restore must not block it
+            if loaded.get("saved_at", 0) <= self.file_saved_at:
+                return False
+            self.data.update(loaded)
+            self.data["settings"] = {**DEFAULT_SETTINGS, **loaded.get("settings", {})}
+            self.save()
+            self.dirty = False
+            return True
 
     @property
     def settings(self):

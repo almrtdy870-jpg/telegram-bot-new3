@@ -42,14 +42,29 @@ class BotAPI:
         return self.call("answerCallbackQuery", callback_query_id=callback_id,
                          text=text, show_alert=alert)
 
-    def send_document(self, chat_id, filename, content: bytes, caption=""):
+    def send_document(self, chat_id, filename, content: bytes, caption="", silent=False):
         try:
             r = self.s.post(f"{self.base}/sendDocument",
-                            data={"chat_id": chat_id, "caption": caption},
+                            data={"chat_id": chat_id, "caption": caption,
+                                  "disable_notification": "true" if silent else "false"},
                             files={"document": (filename, content)}, timeout=60)
             return r.json().get("result")
         except (requests.RequestException, ValueError) as e:
             print(f"[tg] sendDocument error: {e}")
+            return None
+
+    def edit_document(self, chat_id, message_id, filename, content: bytes, caption=""):
+        """Replace the file of an existing document message (no new message)."""
+        try:
+            media = {"type": "document", "media": "attach://file", "caption": caption}
+            r = self.s.post(f"{self.base}/editMessageMedia",
+                            data={"chat_id": chat_id, "message_id": message_id,
+                                  "media": json.dumps(media)},
+                            files={"file": (filename, content)}, timeout=60)
+            data = r.json()
+            return data.get("result") if data.get("ok") else None
+        except (requests.RequestException, ValueError) as e:
+            print(f"[tg] editMessageMedia error: {e}")
             return None
 
     def download_text(self, file_id, limit=5_000_000):
