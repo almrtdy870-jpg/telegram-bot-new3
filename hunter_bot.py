@@ -111,6 +111,10 @@ def on_found(username, status, source, claim_result):
     chat_id = hunt_ctx["chat_id"]
     if not chat_id:
         return
+    mode = store.settings.get("notify", "claimed")
+    claimed = bool(claim_result and claim_result[0])
+    if mode == "off" or (mode == "claimed" and not claimed):
+        return  # still saved in results + shown on the dashboard
     if status == checker.FRAGMENT:
         bot.send(chat_id, f"💎 <b>يوزر معروض في فراجمنت</b>\n@{username}\n"
                           f"https://fragment.com/username/{username}")
@@ -138,7 +142,7 @@ def on_status(_summary=None):
 
 def on_maybe(names):
     chat_id = hunt_ctx["chat_id"]
-    if not chat_id:
+    if not chat_id or store.settings.get("notify", "claimed") != "all":
         return
     bot.send(chat_id, f"🟡 <b>محتملة غير مؤكدة ({len(names)})</b>\n"
                       "ماكو جلسة متصلة، فهاي من t.me بس وأغلبها ممكن تكون محجوزة أو محظورة:\n\n"
@@ -150,6 +154,7 @@ hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe)
 
 # ---------------------------------------------------------------- texts
 CLAIM_LABELS = {"off": "إيقاف", "channel": "قناة", "account": "حسابي"}
+NOTIFY_LABELS = {"all": "🔔 الكل", "claimed": "🔒 المحجوز بس", "off": "🔕 إيقاف"}
 LINE = "━━━━━━━━━━━━━━━"
 LEVEL_ICON = {"ok": "🟢", "warn": "🟡", "info": "🔵", "error": "🔴"}
 
@@ -248,6 +253,7 @@ def main_menu():
         [btn("🎯 نوع الصيد", "presets"), btn("🧬 بحث مشابه", "set_similar")],
         [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
         [btn("🏆 النتائج", "found"), btn("🔄 تحديث", "menu")],
+        [btn(f"الإشعارات: {NOTIFY_LABELS[store.settings.get('notify', 'claimed')]}", "cycle_notify")],
     ]}
 
 
@@ -361,7 +367,7 @@ def start_hunt(chat_id, mid=None):
     hunt_ctx["status_msg"] = mid
     hunter.start()
     on_status()
-    if not pool.ready:
+    if not pool.ready and store.settings.get("notify", "claimed") != "off":
         reason = ("الجلسات موجودة بس مو متصلة أو بفلود، فالمحتملات تنتظر وتنفحص وتنحجز أول ما تتصل."
                   if pool.sessions else "ماكو أي جلسة، فالنتائج غير مؤكدة وتجيك مجمّعة.")
         bot.send(chat_id, f"⚠️ <b>ماكو جلسة متصلة</b>\n{reason}\nشوف 🔑 الجلسات و 📜 سجل الأخطاء.")
@@ -690,6 +696,11 @@ def handle_callback(cq):
         key, prompt = PROMPTS[data]
         states[chat_id] = key
         bot.send(chat_id, prompt, BACK)
+    elif data == "cycle_notify":
+        order = ["claimed", "off", "all"]
+        cur = store.settings.get("notify", "claimed")
+        store.set("notify", order[(order.index(cur) + 1) % 3] if cur in order else "claimed")
+        bot.edit(chat_id, mid, dashboard(), main_menu())
     elif data == "cycle_claim":
         order = ["off", "channel", "account"]
         nxt = order[(order.index(s["claim_mode"]) + 1) % 3]

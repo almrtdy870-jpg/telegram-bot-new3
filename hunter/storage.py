@@ -18,6 +18,7 @@ DEFAULT_SETTINGS = {
     "max_checks": 0,           # 0 = unlimited
     "claim_mode": "channel",   # off | channel | account
     "notify_fragment": False,  # also report names listed on Fragment
+    "notify": "claimed",       # all | claimed | off  (hunt notifications in chat)
 }
 
 
