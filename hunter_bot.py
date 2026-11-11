@@ -16,6 +16,7 @@ Environment variables:
     PORT            web port for webhook mode (default 10000)
 """
 import html
+import itertools
 import os
 import re
 import threading
@@ -27,7 +28,9 @@ from hunter import checker
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
-from hunter.generator import PRESETS, similar_stream, space_size, validate_template
+from hunter.generator import (MAX_REPLACE_POSITIONS, PRESETS, replace_count, replace_stream,
+                              similar_stream,
+                              space_size, validate_template)
 from hunter.rules import is_valid, normalize
 from hunter.sessions import LoginFlow, SessionPool
 from hunter.storage import Store
@@ -52,6 +55,7 @@ store.data.setdefault("total_checks", 0)
 app = Flask(__name__)
 
 states = {}   # chat id -> pending input state
+rep_tmp = {}  # chat id -> base word while choosing positions
 logins = {}   # chat id -> LoginFlow in progress
 hunt_ctx = {"chat_id": None, "status_msg": None}
 
@@ -164,6 +168,8 @@ def target_label(s):
         return f"كلمات ({len(s['words'])})"
     if s["mode"] == "similar":
         return f"مشابه @{s['similar_base']}"
+    if s["mode"] == "replace":
+        return f"تغيير حرف ({len(s.get('replace_rules', []))} صيغة)"
     if s["mode"] == "template":
         return f"قالب {s['template']}"
     return PRESETS.get(s["preset"], PRESETS["five"])[0]
@@ -251,10 +257,39 @@ def main_menu():
         [btn("📊 الإحصائيات", "stats"), btn("🔑 الجلسات", "sessions")],
         [btn("⚙️ الإعدادات", "settings"), btn("📜 سجل الأخطاء", "errors")],
         [btn("🎯 نوع الصيد", "presets"), btn("🧬 بحث مشابه", "set_similar")],
+        [btn("🔤 تغيير حرف بالطلب", "replace")],
         [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
         [btn("🏆 النتائج", "found"), btn("🔄 تحديث", "menu")],
         [btn(f"الإشعارات: {NOTIFY_LABELS[store.settings.get('notify', 'claimed')]}", "cycle_notify")],
     ]}
+
+
+def replace_text():
+    rules = store.settings.get("replace_rules", [])
+    text = ("🔤 <b>تغيير حرف بالطلب</b>\n\n"
+            "تدز صيغة (مثل <code>vcvcv</code>) وتختار رقم الحرف اللي يتغيّر، "
+            "والبوت يجرب كل الحروف a-z بمكانه:\n"
+            "<code>vcvcv</code> + الحرف 1 ← <code>acvcv</code> <code>bcvcv</code> <code>ccvcv</code> ...\n\n")
+    if not rules:
+        return text + "📭 ماكو صيغ بعد، اضغط ➕ إضافة صيغة جديدة."
+    total = sum(replace_count(r) for r in rules)
+    text += f"• الصيغ المضافة: <b>{len(rules)}</b>\n• عدد اليوزرات: <b>{total:,}</b>"
+    if store.settings["mode"] == "replace":
+        text += "\n• ✅ هذا هو نوع الصيد الحالي"
+    return text
+
+
+def replace_menu():
+    rows = [[btn("➕ إضافة صيغة جديدة", "rep_add")]]
+    for i, r in enumerate(store.settings.get("replace_rules", [])):
+        pos = ",".join(str(p) for p in r["pos"])
+        rows.append([btn(f"🛠 {r['base']} (الحرف: {pos})", f"rep_info:{i}"),
+                     btn("❌ حذف", f"rep_del:{i}")])
+    if store.settings.get("replace_rules"):
+        rows.append([btn("▶️ صيد هاي الصيغ", "rep_start")])
+        rows.append([btn("🗑 مسح الكل", "rep_clear")])
+    rows.append([btn("🔙 رجوع", "menu")])
+    return {"inline_keyboard": rows}
 
 
 def settings_menu():
@@ -696,6 +731,49 @@ def handle_callback(cq):
         key, prompt = PROMPTS[data]
         states[chat_id] = key
         bot.send(chat_id, prompt, BACK)
+    elif data == "replace":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, replace_text(), replace_menu())
+    elif data == "rep_add":
+        states[chat_id] = "rep_base"
+        bot.send(chat_id, "📝 أرسل الصيغة أو النص الأساسي (مثلاً <code>vcvcv</code> أو <code>python</code>):", BACK)
+    elif data.startswith("rep_info:"):
+        rules = store.settings.get("replace_rules", [])
+        i = int(data[9:])
+        if 0 <= i < len(rules):
+            r = rules[i]
+            base = r["base"]
+            marked = "".join(f"[{ch}]" if k + 1 in r["pos"] else ch for k, ch in enumerate(base))
+            sample = " ".join(f"<code>{n}</code>" for n in itertools.islice(replace_stream([r]), 6))
+            bot.send(chat_id, f"🛠 <b>{base}</b>\nالأحرف اللي تتغيّر: <code>{marked}</code>\n"
+                              f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
+                     {"inline_keyboard": [[btn("🔙 تغيير حرف", "replace")]]})
+    elif data.startswith("rep_del:"):
+        rules = list(store.settings.get("replace_rules", []))
+        i = int(data[8:])
+        if 0 <= i < len(rules):
+            rules.pop(i)
+            store.set("replace_rules", rules)
+        bot.edit(chat_id, mid, replace_text(), replace_menu())
+    elif data == "rep_clear":
+        bot.edit(chat_id, mid, "❓ متأكد تريد تمسح كل الصيغ؟",
+                 {"inline_keyboard": [[btn("✅ نعم", "rep_clear_ok"), btn("❌ لا", "replace")]]})
+    elif data == "rep_clear_ok":
+        store.set("replace_rules", [])
+        bot.edit(chat_id, mid, replace_text(), replace_menu())
+    elif data == "rep_start":
+        if not store.settings.get("replace_rules"):
+            bot.edit(chat_id, mid, replace_text(), replace_menu())
+            return
+        if hunter.running:
+            bot.send(chat_id, "⚠️ الصيد شغّال، أوقفه أول وبعدين اضغط ▶️ صيد هاي الصيغ.", replace_menu())
+            return
+        store.set("mode", "replace")
+        total = sum(replace_count(r) for r in store.settings["replace_rules"])
+        event(f"🔤 تغيير حرف: {len(store.settings['replace_rules'])} صيغة ({total:,})", "info")
+        err = start_hunt(chat_id, mid)
+        if err:
+            bot.send(chat_id, err, main_menu())
     elif data == "cycle_notify":
         order = ["claimed", "off", "all"]
         cur = store.settings.get("notify", "claimed")
@@ -758,6 +836,36 @@ def handle_message(msg):
 
     if state == "similar":
         start_similar(chat_id, text)
+        return
+    if state == "rep_base":
+        base = normalize(text.split()[0]) if text.split() else ""
+        if not (5 <= len(base) <= 32) or not base.isascii() or not all(ch.isalnum() or ch == "_" for ch in base):
+            bot.send(chat_id, "⚠️ الصيغة لازم تكون حروف إنجليزية/أرقام/_ (5 إلى 32 حرف). أرسلها مرة ثانية:", BACK)
+            return
+        rep_tmp[chat_id] = base
+        states[chat_id] = "rep_pos"
+        bot.send(chat_id, f"🔢 الصيغة المرسلة: <code>{base}</code> (طولها {len(base)} حروف)\n\n"
+                          f"أرسل <b>رقم الحرف</b> الذي تريد تغييره عند الفحص (من 1 إلى {len(base)}).\n"
+                          f"تكدر تختار لحد {MAX_REPLACE_POSITIONS} أماكن سوه، مثل <code>1,3</code>", BACK)
+        return
+    if state == "rep_pos":
+        base = rep_tmp.get(chat_id)
+        nums = [int(x) for x in re.findall(r"\d+", "".join(str(int(c)) if c.isdigit() else c for c in text))]
+        nums = sorted(set(nums))
+        if not base or not nums or any(not 1 <= n <= len(base) for n in nums) \
+                or len(nums) > MAX_REPLACE_POSITIONS:
+            bot.send(chat_id, f"⚠️ أرسل رقم من 1 إلى {len(base or '')} "
+                              f"(أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>1,3</code>).", BACK)
+            return
+        states.pop(chat_id, None)
+        rep_tmp.pop(chat_id, None)
+        rules = list(store.settings.get("replace_rules", []))
+        rules.append({"base": base, "pos": nums})
+        store.set("replace_rules", rules)
+        pos = ",".join(str(n) for n in nums)
+        bot.send(chat_id, "✅ <b>تمت إضافة الصيغة</b>\n\n"
+                          f"• المضافة: <code>{base}</code> (الحرف: {pos}) ← {replace_count(rules[-1]):,} يوزر\n\n"
+                          + replace_text().split("\n\n", 2)[-1], replace_menu())
         return
     if state == "claim":
         states.pop(chat_id, None)

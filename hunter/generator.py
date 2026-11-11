@@ -10,6 +10,7 @@ Template tokens (uppercase):
 Anything else in [a-z0-9_] is taken literally.
 Example: "L=L=L" -> "aabbc", "LDDDD" -> "k4821", "pro_LLL" -> "pro_xqz".
 """
+import itertools
 import random
 import string
 
@@ -184,10 +185,40 @@ def similar_stream(base, prefix="", suffix="", seen=None):
         yield name
 
 
+MAX_REPLACE_POSITIONS = 3  # 26^3 = 17,576 names per rule
+
+
+def replace_count(rule) -> int:
+    return len(LETTERS) ** len(rule.get("pos", []))
+
+
+def replace_stream(rules, prefix="", suffix="", seen=None):
+    """'Change letter on demand': for each rule {base, pos:[1-based]} try every
+    letter a-z at the chosen positions, keeping the rest of `base` as is."""
+    seen = seen if seen is not None else set()
+    for rule in rules:
+        base = normalize(rule.get("base", ""))
+        pos = sorted({p - 1 for p in rule.get("pos", []) if 1 <= p <= len(base)})
+        if not base or not pos:
+            continue
+        for combo in itertools.product(LETTERS, repeat=len(pos)):
+            chars = list(base)
+            for p, ch in zip(pos, combo):
+                chars[p] = ch
+            name = f"{prefix}{''.join(chars)}{suffix}"
+            if name in seen or not is_valid(name):
+                continue
+            seen.add(name)
+            yield name
+
+
 def make_stream(settings, seen=None):
     mode = settings.get("mode", "preset")
     prefix = settings.get("prefix", "")
     suffix = settings.get("suffix", "")
+    if mode == "replace":
+        # fresh `seen` so re-running the same rules re-checks everything
+        return replace_stream(settings.get("replace_rules", []), prefix, suffix)
     if mode == "similar":
         # fresh `seen` so a repeated search re-checks everything
         return similar_stream(settings.get("similar_base", ""), prefix, suffix)
