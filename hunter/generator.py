@@ -188,8 +188,33 @@ def similar_stream(base, prefix="", suffix="", seen=None):
 MAX_REPLACE_POSITIONS = 3  # 26^3 = 17,576 names per rule
 
 
+REPLACE_SETS = {
+    "letters": ("كل الحروف a-z", LETTERS),
+    "digits": ("أرقام 0-9", DIGITS),
+    "alnum": ("حروف + أرقام", LETTERS + DIGITS),
+    "vowels": ("حروف العلة aeiou", VOWELS),
+    "consonants": ("الحروف الساكنة", CONSONANTS),
+}
+
+
+def clean_chars(text: str) -> str:
+    """Keep allowed username chars, de-duplicated, in the order typed."""
+    out = []
+    for ch in (text or "").lower():
+        if ch in LITERALS and ch not in out:
+            out.append(ch)
+    return "".join(out)
+
+
+def chars_label(chars: str) -> str:
+    for label, cs in REPLACE_SETS.values():
+        if chars == cs:
+            return label.split(" ")[-1] if "-" in label else label
+    return chars if len(chars) <= 10 else chars[:10] + "…"
+
+
 def replace_count(rule) -> int:
-    return len(LETTERS) ** len(rule.get("pos", []))
+    return len(rule.get("chars") or LETTERS) ** len(rule.get("pos", []))
 
 
 def replace_stream(rules, prefix="", suffix="", seen=None):
@@ -201,7 +226,8 @@ def replace_stream(rules, prefix="", suffix="", seen=None):
         pos = sorted({p - 1 for p in rule.get("pos", []) if 1 <= p <= len(base)})
         if not base or not pos:
             continue
-        for combo in itertools.product(LETTERS, repeat=len(pos)):
+        chars_set = rule.get("chars") or LETTERS
+        for combo in itertools.product(chars_set, repeat=len(pos)):
             chars = list(base)
             for p, ch in zip(pos, combo):
                 chars[p] = ch

@@ -28,7 +28,8 @@ from hunter import checker
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
-from hunter.generator import (MAX_REPLACE_POSITIONS, PRESETS, replace_count, replace_stream,
+from hunter.generator import (MAX_REPLACE_POSITIONS, PRESETS, REPLACE_SETS, chars_label,
+                              clean_chars, replace_count, replace_stream,
                               similar_stream,
                               space_size, validate_template)
 from hunter.rules import is_valid, normalize
@@ -267,9 +268,9 @@ def main_menu():
 def replace_text():
     rules = store.settings.get("replace_rules", [])
     text = ("🔤 <b>تغيير حرف بالطلب</b>\n\n"
-            "تدز صيغة (مثل <code>vcvcv</code>) وتختار رقم الحرف اللي يتغيّر، "
-            "والبوت يجرب كل الحروف a-z بمكانه:\n"
-            "<code>vcvcv</code> + الحرف 1 ← <code>acvcv</code> <code>bcvcv</code> <code>ccvcv</code> ...\n\n")
+            "تدز صيغة (مثل <code>vcvcv</code>)، وتختار رقم الحرف اللي يتغيّر، "
+            "وتختار <b>أنت</b> شنو الحروف اللي يجربها بمكانه:\n"
+            "<code>vcvcv</code> + الحرف 1 + <code>aeo</code> ← <code>acvcv</code> <code>ecvcv</code> <code>ocvcv</code>\n\n")
     if not rules:
         return text + "📭 ماكو صيغ بعد، اضغط ➕ إضافة صيغة جديدة."
     total = sum(replace_count(r) for r in rules)
@@ -283,13 +284,51 @@ def replace_menu():
     rows = [[btn("➕ إضافة صيغة جديدة", "rep_add")]]
     for i, r in enumerate(store.settings.get("replace_rules", [])):
         pos = ",".join(str(p) for p in r["pos"])
-        rows.append([btn(f"🛠 {r['base']} (الحرف: {pos})", f"rep_info:{i}"),
+        rows.append([btn(f"🛠 {r['base']} ({pos} ← {chars_label(r.get('chars') or 'abcdefghijklmnopqrstuvwxyz')})",
+                         f"rep_info:{i}"),
                      btn("❌ حذف", f"rep_del:{i}")])
     if store.settings.get("replace_rules"):
         rows.append([btn("▶️ صيد هاي الصيغ", "rep_start")])
         rows.append([btn("🗑 مسح الكل", "rep_clear")])
     rows.append([btn("🔙 رجوع", "menu")])
     return {"inline_keyboard": rows}
+
+
+def rep_chars_menu():
+    rows, row = [], []
+    for key, (label, _cs) in REPLACE_SETS.items():
+        row.append(btn(label, f"rep_cs:{key}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([btn("🔙 رجوع", "replace")])
+    return {"inline_keyboard": rows}
+
+
+def finish_rule(chat_id, chars):
+    tmp = rep_tmp.get(chat_id)
+    states.pop(chat_id, None)
+    rep_tmp.pop(chat_id, None)
+    if not isinstance(tmp, dict):
+        bot.send(chat_id, "⚠️ انتهت العملية، ابدأ من جديد.", replace_menu())
+        return
+    rule = {"base": tmp["base"], "pos": tmp["pos"], "chars": chars}
+    n = replace_count(rule)
+    if n > 50000:
+        bot.send(chat_id, f"⚠️ هاي الصيغة تطلع {n:,} يوزر وهواية. قلل الأماكن أو الحروف.", replace_menu())
+        return
+    rules = list(store.settings.get("replace_rules", []))
+    rules.append(rule)
+    store.set("replace_rules", rules)
+    pos = ",".join(str(p) for p in rule["pos"])
+    bot.send(chat_id, "✅ <b>تمت إضافة الصيغة</b>\n\n"
+                      f"• الصيغة: <code>{rule['base']}</code>\n"
+                      f"• المكان: {pos}\n"
+                      f"• الحروف: <code>{chars}</code>\n"
+                      f"• عدد اليوزرات: {n:,}\n\n"
+                      + replace_text().split("\n\n", 2)[-1], replace_menu())
 
 
 def settings_menu():
@@ -746,8 +785,15 @@ def handle_callback(cq):
             marked = "".join(f"[{ch}]" if k + 1 in r["pos"] else ch for k, ch in enumerate(base))
             sample = " ".join(f"<code>{n}</code>" for n in itertools.islice(replace_stream([r]), 6))
             bot.send(chat_id, f"🛠 <b>{base}</b>\nالأحرف اللي تتغيّر: <code>{marked}</code>\n"
+                              f"الحروف المجرّبة: <code>{r.get('chars') or 'a-z'}</code>\n"
                               f"عدد اليوزرات: {replace_count(r):,}\nأمثلة: {sample} ...",
                      {"inline_keyboard": [[btn("🔙 تغيير حرف", "replace")]]})
+    elif data.startswith("rep_cs:"):
+        key = data[7:]
+        if states.get(chat_id) == "rep_chars" and key in REPLACE_SETS:
+            finish_rule(chat_id, REPLACE_SETS[key][1])
+        else:
+            bot.edit(chat_id, mid, replace_text(), replace_menu())
     elif data.startswith("rep_del:"):
         rules = list(store.settings.get("replace_rules", []))
         i = int(data[8:])
@@ -857,15 +903,20 @@ def handle_message(msg):
             bot.send(chat_id, f"⚠️ أرسل رقم من 1 إلى {len(base or '')} "
                               f"(أو لحد {MAX_REPLACE_POSITIONS} أرقام مثل <code>1,3</code>).", BACK)
             return
-        states.pop(chat_id, None)
-        rep_tmp.pop(chat_id, None)
-        rules = list(store.settings.get("replace_rules", []))
-        rules.append({"base": base, "pos": nums})
-        store.set("replace_rules", rules)
-        pos = ",".join(str(n) for n in nums)
-        bot.send(chat_id, "✅ <b>تمت إضافة الصيغة</b>\n\n"
-                          f"• المضافة: <code>{base}</code> (الحرف: {pos}) ← {replace_count(rules[-1]):,} يوزر\n\n"
-                          + replace_text().split("\n\n", 2)[-1], replace_menu())
+        rep_tmp[chat_id] = {"base": base, "pos": nums}
+        states[chat_id] = "rep_chars"
+        marked = "".join(f"[{ch}]" if k + 1 in nums else ch for k, ch in enumerate(base))
+        bot.send(chat_id, f"✍️ المكان اللي يتغيّر: <code>{marked}</code>\n\n"
+                          "شنو الحروف اللي تريد تجربها بهذا المكان؟\n"
+                          "• <b>اكتبها بنفسك</b> ودزها، مثل <code>aeo</code> أو <code>xyz</code> أو <code>a b c 7</code>\n"
+                          "• أو اختار من الأزرار:", rep_chars_menu())
+        return
+    if state == "rep_chars":
+        chars = clean_chars(text)
+        if not chars:
+            bot.send(chat_id, "⚠️ اكتب حروف إنجليزية صغيرة أو أرقام أو _ ، مثل <code>aeo</code>", rep_chars_menu())
+            return
+        finish_rule(chat_id, chars)
         return
     if state == "claim":
         states.pop(chat_id, None)
