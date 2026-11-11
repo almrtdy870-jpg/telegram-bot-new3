@@ -20,7 +20,7 @@ import time
 from flask import Flask, request
 
 from hunter import checker
-from hunter.claimer import Claimer
+from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.generator import PRESETS, space_size, validate_template
 from hunter.rules import is_valid, normalize
@@ -265,7 +265,13 @@ def account_text():
                 "وحط القيم بمتغيرات البيئة API_ID و API_HASH و TG_SESSION.")
     if not c.ready:
         return f"👤 ❌ فشل تسجيل الدخول: <code>{html.escape(c.last_error)}</code>"
-    fl = f"\n⏳ فلود: {c.flood_left} ثانية" if c.flood_left else ""
+    fl = ""
+    if c.check_flood_left:
+        fl += f"\n🧊 فلود الفحص: {fmt_wait(c.check_flood_left)}"
+    if c.claim_flood_left:
+        fl += f"\n🧊 فلود الحجز: {fmt_wait(c.claim_flood_left)}"
+    if hunter.verify_q or hunter.claim_q:
+        fl += f"\n🕓 بانتظار التحقق: {len(hunter.verify_q)} | 📌 بانتظار الحجز: {len(hunter.claim_q)}"
     return (f"👤 <b>الحساب مربوط</b>\n\n• الاسم: {html.escape(c.me.first_name or '')}\n"
             f"• اليوزر: @{c.me.username or '-'}\n• الآيدي: <code>{c.me.id}</code>{fl}")
 
@@ -296,6 +302,11 @@ def run_claim_list(chat_id, names):
             bot.send(chat_id, f"🚫 <code>{html.escape(n)}</code> صيغة غير صالحة (5 أحرف على الأقل)")
             continue
         ok, msg = c.claim(n, "channel")
+        if not ok and msg.startswith("FLOOD:"):
+            hunter.queue_claim(n)
+            bot.send(chat_id, f"🧊 الحساب بفلود ({fmt_wait(c.claim_flood_left)}).\n"
+                              f"📌 @{n} انضاف لقائمة الانتظار وراح ينحجز تلقائياً بعد الفلود.")
+            continue
         if ok:
             store.add_found(n, checker.AVAILABLE, "manual", claimed=True)
             bot.send(chat_id, f"🔒 <b>تم الحجز!</b> @{n}\n{html.escape(msg)}")
