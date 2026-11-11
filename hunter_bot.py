@@ -379,7 +379,7 @@ def handle_callback(cq):
     elif data in PROMPTS:
         key, prompt = PROMPTS[data]
         states[chat_id] = key
-        bot.edit(chat_id, mid, prompt, BACK)
+        bot.send(chat_id, prompt, BACK)  # new message: keep menu + confirmations visible
     elif data == "cycle_claim":
         order = ["off", "channel", "account"]
         nxt = order[(order.index(s["claim_mode"]) + 1) % 3]
