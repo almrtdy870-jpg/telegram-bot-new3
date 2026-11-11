@@ -733,7 +733,9 @@ def save_session(chat_id, string):
     if not c.ready:
         pool.sessions.remove(c)
         c.disconnect()
-        bot.send(chat_id, f"❌ ما اشتغلت الجلسة:\n<code>{html.escape(c.last_error)}</code>",
+        bot.send(chat_id, f"❌ ما اشتغلت الجلسة:\n<code>{html.escape(c.last_error)}</code>\n\n"
+                          "💡 البوت يقبل جلسات Telethon و Pyrogram. تأكد إنك نسخت الكود كامل "
+                          "بدون نقص، أو ضيف الحساب بـ ➕ إضافة بالرقم.",
                  sessions_menu())
         return
     with store.lock:

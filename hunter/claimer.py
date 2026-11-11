@@ -13,6 +13,8 @@ Flood control:
     of the most heavily rate-limited actions.
 """
 import asyncio
+import base64
+import struct
 import threading
 import time
 
@@ -29,6 +31,41 @@ CHECK_INTERVAL = 4.0  # default seconds between account.checkUsername calls
 MAX_INTERVAL = 60.0
 AUTO_MIN = 2.5        # auto mode never goes faster than this
 AUTO_MAX_BASE = 12.0  # ...and never learns a base slower than this
+
+
+# Telegram production data centres (needed to turn a Pyrogram session into Telethon's)
+DC_IPS = {1: "149.154.175.53", 2: "149.154.167.51", 3: "149.154.175.100",
+          4: "149.154.167.91", 5: "91.108.56.130"}
+# Pyrogram string-session layouts by decoded length
+_PYRO_FORMATS = {271: ">BI?256sQ?", 263: ">B?256sI?", 267: ">B?256sQ?"}
+
+
+def to_telethon_session(s: str) -> str:
+    """Accept a Telethon StringSession or convert a Pyrogram one. Returns a
+    Telethon string, or the input unchanged when it can't be recognised."""
+    s = (s or "").strip()
+    if s.startswith("1") and TelegramClient is not None:
+        try:
+            StringSession(s)
+            return s  # already a valid Telethon session
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        data = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    except (ValueError, TypeError):
+        return s
+    fmt = _PYRO_FORMATS.get(len(data))
+    if not fmt or TelegramClient is None:
+        return s
+    fields = struct.unpack(fmt, data)
+    dc_id, auth_key = fields[0], fields[3] if len(fmt) == 10 else fields[2]
+    if dc_id not in DC_IPS:
+        return s
+    from telethon.crypto import AuthKey
+    ss = StringSession()
+    ss.set_dc(dc_id, DC_IPS[dc_id], 443)
+    ss.auth_key = AuthKey(auth_key)
+    return ss.save()
 
 
 def fmt_wait(seconds: int) -> str:
@@ -81,7 +118,7 @@ class Claimer:
         return self.ready
 
     async def _start(self):
-        self.client = TelegramClient(StringSession(self.session_string),
+        self.client = TelegramClient(StringSession(to_telethon_session(self.session_string)),
                                      self.api_id, self.api_hash)
         await self.client.connect()
         if not await self.client.is_user_authorized():
@@ -166,7 +203,8 @@ class Claimer:
                 self.base_interval = min(AUTO_MAX_BASE, self.base_interval * 1.5)
             self.interval = min(MAX_INTERVAL, max(self.interval * 2, self.base_interval * 2))
             self._ok_streak = 0
-            name = f"@{self.me.username}" if self.me and self.me.username else self.label
+            name = (f"@{self.me.username}" if self.me and self.me.username
+                    else str(self.me.id) if self.me else self.label)
             error(f"🧊 فلود فحص على {name}: {fmt_wait(e.seconds)} - صار يفحص كل {self.interval:.0f}ث")
             return None
         except errors.UsernameInvalidError:
