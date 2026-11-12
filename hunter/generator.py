@@ -374,7 +374,81 @@ def replace_cycle(settings, on_round=None):
         yield name
 
 
+# ---------------------------------------------------------------- multi-source hunting
+def source_label(settings, key) -> str:
+    if key.startswith("preset:"):
+        return PRESETS.get(key[7:], ("?",))[0]
+    if key == "template":
+        tpls = (settings.get("template") or "").split()
+        return f"قالب {tpls[0]}" if len(tpls) == 1 else f"{len(tpls)} قوالب"
+    if key == "similar":
+        return f"مشابه @{settings.get('similar_base', '')}"
+    if key == "words":
+        return f"كلمات ({len(settings.get('words', []))})"
+    if key == "replace":
+        return f"تغيير حرف ({len(settings.get('replace_rules', []))} صيغة)"
+    return key
+
+
+def _source_once(settings, key, on_round):
+    prefix, suffix = settings.get("prefix", ""), settings.get("suffix", "")
+    if key.startswith("preset:"):
+        return random_stream(PRESETS.get(key[7:], PRESETS["five"])[1], prefix, suffix)
+    if key == "template":
+        return random_stream((settings.get("template") or "LLLLL").split(), prefix, suffix)
+    if key == "similar":
+        return similar_stream(settings.get("similar_base", ""), prefix, suffix)
+    if key == "words":
+        return words_stream(settings.get("words", []), prefix, suffix, settings.get("word_variants", False))
+    if key == "replace":
+        return replace_cycle(settings, lambda r: on_round and on_round(source_label(settings, key), r))
+    return iter(())
+
+
+def source_cycle(settings, key, on_round=None):
+    """One hunting method, endlessly: when it runs out it starts a new round."""
+    rnd = 1
+    while True:
+        produced = False
+        for name in _source_once(settings, key, on_round):
+            produced = True
+            yield name
+        if not produced:
+            return  # nothing to hunt (e.g. empty word list)
+        rnd += 1
+        if on_round:
+            on_round(source_label(settings, key), rnd)
+
+
+def multi_stream(settings, on_round=None):
+    """Hunt every selected method together (round-robin). Methods selected or
+    removed while hunting are applied immediately (settings['sources_rev'])."""
+    active, rev = {}, object()
+    while True:
+        cur = settings.get("sources_rev", 0)
+        if cur != rev:
+            rev = cur
+            keys = list(settings.get("sources", []))
+            for k in list(active):
+                if k not in keys:
+                    del active[k]
+            for k in keys:
+                if k not in active:
+                    active[k] = source_cycle(settings, k, on_round)
+        if not active:
+            return
+        for k in list(active):
+            try:
+                yield next(active[k])
+            except StopIteration:
+                del active[k]
+            if settings.get("sources_rev", 0) != rev:
+                break
+
+
 def make_stream(settings, seen=None, on_round=None):
+    if settings.get("sources"):
+        return multi_stream(settings, on_round)
     mode = settings.get("mode", "preset")
     prefix = settings.get("prefix", "")
     suffix = settings.get("suffix", "")

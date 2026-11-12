@@ -50,7 +50,7 @@ class Hunter:
             return False
         self.stats = self._new_stats()
         self._gen = make_stream(self.store.settings, self.seen,
-                                on_round=lambda r: event(f"🔁 خلصت الدورة، بدت الدورة {r}", "info"))
+                                on_round=lambda label, r: event(f"🔁 {label}: خلصت الدورة، بدت الدورة {r}", "info"))
         self.running = True
         n = max(1, min(int(self.store.settings.get("threads", 5)), 50))
         self._threads = [threading.Thread(target=self._worker, daemon=True) for _ in range(n)]

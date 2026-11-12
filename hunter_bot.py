@@ -34,6 +34,7 @@ from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
+from hunter.generator import source_label
 from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS,
                               clean_chars, replace_count, replace_stream, rule_label,
                               rule_sets,
@@ -206,16 +207,32 @@ LEVEL_ICON = {"ok": "🟢", "warn": "🟡", "info": "🔵", "error": "🔴"}
 
 
 def target_label(s):
-    if s["mode"] == "words":
-        return f"كلمات ({len(s['words'])})"
-    if s["mode"] == "similar":
-        return f"مشابه @{s['similar_base']}"
-    if s["mode"] == "replace":
-        return f"تغيير حرف ({len(s.get('replace_rules', []))} صيغة)"
-    if s["mode"] == "template":
-        n = len(s["template"].split())
-        return f"قالب {s['template']}" if n == 1 else f"{n} قوالب"
-    return PRESETS.get(s["preset"], PRESETS["five"])[0]
+    srcs = s.get("sources") or []
+    if not srcs:
+        return "ماكو طريقة مختارة"
+    if len(srcs) == 1:
+        return source_label(s, srcs[0])
+    return f"{len(srcs)} طرق سوه"
+
+
+def set_source(key, on=True):
+    """Select / unselect a hunting method; a running hunt picks it up live."""
+    with store.lock:
+        srcs = list(store.settings.get("sources") or [])
+        if on and key not in srcs:
+            srcs.append(key)
+        elif not on and key in srcs:
+            srcs.remove(key)
+        else:
+            return False
+        store.data["settings"]["sources"] = srcs
+        store.data["settings"]["sources_rev"] = store.settings.get("sources_rev", 0) + 1
+        store.save()
+    return True
+
+
+def live_src_note():
+    return "\n🟢 الصيد شغّال - دخلت فوراً." if hunter.running else "\nاضغط ▶️ تشغيل الصيد حتى يبدي."
 
 
 def dashboard():
@@ -309,8 +326,12 @@ def main_menu():
 
 
 def modes_text():
+    srcs = store.settings.get("sources") or []
+    active = ("\n".join(f"✅ {html.escape(source_label(store.settings, k))}" for k in srcs)
+              if srcs else "— ماكو، اختار وحدة أو أكثر من الأزرار")
     return ("🎯 <b>طرق الصيد</b>\n\n"
-            f"• الطريقة الحالية: <b>{html.escape(target_label(store.settings))}</b>\n\n"
+            "كل طريقة تختارها <b>تنصاد سوه</b> ويّا الباقي، وبشكل <b>دائري</b> بلا توقف.\n\n"
+            f"<b>المختار الآن ({len(srcs)}):</b>\n{active}\n\n"
             "🎯 <b>أنواع جاهزة</b>: خماسي، سداسي، مكرر، شبه ثلاثي...\n"
             "🔤 <b>تغيير حرف بالطلب</b>: صيغك، دائري ولحد 1000 صيغة\n"
             "🧬 <b>بحث مشابه</b>: يوزرات قريبة من يوزر تحدده\n"
@@ -319,12 +340,15 @@ def modes_text():
 
 
 def modes_menu():
-    return {"inline_keyboard": [
+    rows = [
         [btn("🎯 أنواع جاهزة", "presets"), btn("🔤 تغيير حرف بالطلب", "replace")],
         [btn("🧬 بحث مشابه", "set_similar"), btn("✍️ قالب مخصص", "set_template")],
         [btn("📜 قائمة كلمات", "set_words")],
-        [btn("🔙 رجوع", "menu")],
-    ]}
+    ]
+    for i, k in enumerate(store.settings.get("sources") or []):
+        rows.append([btn(f"❌ إلغاء: {source_label(store.settings, k)}"[:60], f"src_off:{i}")])
+    rows.append([btn("🔙 رجوع", "menu")])
+    return {"inline_keyboard": rows}
 
 
 def tools_menu():
@@ -349,7 +373,7 @@ def set_rules(rules):
 
 
 def replace_live():
-    return hunter.running and store.settings["mode"] == "replace"
+    return hunter.running and "replace" in (store.settings.get("sources") or [])
 
 
 def replace_text():
@@ -406,6 +430,7 @@ def add_rules(new_rules):
         added += 1
     if added:
         set_rules(rules)
+        set_source("replace", True)
     return added, skipped
 
 
@@ -538,7 +563,7 @@ def settings_menu():
 def presets_menu():
     rows, row = [], []
     for key, (label, _t) in PRESETS.items():
-        mark = "✅ " if store.settings["mode"] == "preset" and store.settings["preset"] == key else ""
+        mark = "✅ " if f"preset:{key}" in (store.settings.get("sources") or []) else ""
         row.append(btn(f"{mark}{label}", f"preset:{key}"))
         if len(row) == 2:
             rows.append(row)
@@ -620,8 +645,10 @@ def allowed(user_id: str) -> bool:
 # ---------------------------------------------------------------- actions
 def start_hunt(chat_id, mid=None):
     s = store.settings
-    if s["mode"] == "words" and not s["words"]:
-        return "⚠️ قائمة الكلمات فارغة، أرسل الكلمات أولاً من ⚙️ الإعدادات."
+    if "words" in (s.get("sources") or []) and not s["words"]:
+        set_source("words", False)
+    if not s.get("sources"):
+        return "⚠️ ما مختار ولا طريقة صيد. روح 🎯 طرق الصيد واختار وحدة أو أكثر."
     if hunter.running:
         return "⚠️ الصيد شغّال أصلاً."
     hunt_ctx["chat_id"] = chat_id
@@ -687,15 +714,12 @@ def start_similar(chat_id, text):
         return
     states.pop(chat_id, None)
     store.set("similar_base", base)
-    store.set("mode", "similar")
+    set_source("similar", False)  # restart this method with the new name
+    set_source("similar", True)
     total = sum(1 for _ in similar_stream(base, store.settings["prefix"], store.settings["suffix"]))
-    if hunter.running:
-        bot.send(chat_id, f"✅ تم حفظ @{base} ({total} مشابه).\n⚠️ الصيد شغّال، أوقفه وشغّله من جديد.", main_menu())
-        return
     event(f"🧬 بحث مشابه لـ @{base} ({total})", "info")
-    err = start_hunt(chat_id)
-    if err:
-        bot.send(chat_id, err, main_menu())
+    bot.send(chat_id, f"✅ انضاف <b>بحث مشابه لـ @{base}</b> ({total} يوزر، دائري)" + live_src_note(),
+             main_menu())
 
 
 def export_found(chat_id):
@@ -857,17 +881,19 @@ def handle_input(key, text):
             return ("⚠️ قالب غير صالح" + (f": <code>{html.escape(bad[0])}</code>" if bad else "")
                     + "\nكل قالب لازم 5 إلى 32 رمز، ويستخدم L D X V C = وحروف صغيرة/أرقام/_ فقط.")
         store.set("template", " ".join(tpls))
-        store.set("mode", "template")
+        set_source("template", False)
+        set_source("template", True)
         total = sum(space_size(t) for t in tpls)
         lines = "\n".join(f"• <code>{t}</code> (~{space_size(t):,})" for t in tpls)
         return (f"✅ تم حفظ {len(tpls)} قالب" + (" — تنصاد سوه مخلوطة" if len(tpls) > 1 else "")
-                + f"\n{lines}\nالمجموع: ~{total:,} احتمال")
+                + f"\n{lines}\nالمجموع: ~{total:,} احتمال (دائري)" + live_src_note())
     if key == "words":
         words = [normalize(w) for w in text.replace(",", "\n").split()]
         words = list(dict.fromkeys(w for w in words if w))
         store.set("words", words)
-        store.set("mode", "words")
-        return f"✅ تم حفظ {len(words)} كلمة ونوع الصيد صار «كلمات»."
+        set_source("words", False)
+        set_source("words", bool(words))
+        return f"✅ تم حفظ {len(words)} كلمة وانضافت لطرق الصيد (دائري)." + live_src_note()
     if key in ("prefix", "suffix"):
         val = "" if text.strip() == "-" else normalize(text)
         if val and not (val.isascii() and all(ch.isalnum() or ch == "_" for ch in val)):
@@ -936,6 +962,14 @@ def handle_callback(cq):
     elif data == "settings":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
+    elif data.startswith("src_off:"):
+        srcs = store.settings.get("sources") or []
+        i = int(data[8:])
+        if 0 <= i < len(srcs):
+            k = srcs[i]
+            set_source(k, False)
+            event(f"❌ انلغت: {source_label(store.settings, k)}", "warn")
+        bot.edit(chat_id, mid, modes_text(), modes_menu())
     elif data == "modes":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, modes_text(), modes_menu())
@@ -995,12 +1029,17 @@ def handle_callback(cq):
     elif data.startswith("preset:"):
         key = data.split(":", 1)[1]
         if key in PRESETS:
-            store.set("preset", key)
-            store.set("mode", "preset")
+            src = f"preset:{key}"
+            on = src not in (store.settings.get("sources") or [])
+            set_source(src, on)
             label, tpls = PRESETS[key]
             total = sum(space_size(t) for t in tpls)
-            bot.edit(chat_id, mid, f"✅ تم اختيار <b>{label}</b>\nالقوالب: <code>{' | '.join(tpls)}</code>\n"
-                                   f"عدد الاحتمالات تقريباً: {total:,}", presets_menu())
+            if on:
+                text = (f"✅ تم اختيار <b>{label}</b>\nالقوالب: <code>{' | '.join(tpls)}</code>\n"
+                        f"عدد الاحتمالات تقريباً: {total:,} (دائري)" + live_src_note())
+            else:
+                text = f"❌ تم إلغاء <b>{label}</b>"
+            bot.edit(chat_id, mid, text + "\n\nتكدر تختار أكثر من نوع، وكلهن ينصادن سوه.", presets_menu())
     elif data in PROMPTS:
         key, prompt = PROMPTS[data]
         states[chat_id] = key
@@ -1065,6 +1104,7 @@ def handle_callback(cq):
                  {"inline_keyboard": [[btn("✅ نعم", "rep_clear_ok"), btn("❌ لا", "replace")]]})
     elif data == "rep_clear_ok":
         set_rules([])
+        set_source("replace", False)
         bot.edit(chat_id, mid, replace_text(), replace_menu())
     elif data == "rep_start":
         if not store.settings.get("replace_rules"):
@@ -1073,11 +1113,10 @@ def handle_callback(cq):
         if replace_live():
             bot.edit(chat_id, mid, replace_text(), replace_menu())
             return
+        set_source("replace", True)
         if hunter.running:
-            bot.send(chat_id, f"⚠️ في صيد ثاني شغّال ({html.escape(target_label(store.settings))}). "
-                              "أوقفه أول من ⏹ إيقاف الصيد، وبعدين اضغط ▶️ صيد كل الصيغ.", replace_menu())
+            bot.edit(chat_id, mid, replace_text(), replace_menu())
             return
-        store.set("mode", "replace")
         total = sum(replace_count(r) for r in store.settings["replace_rules"])
         event(f"🔤 تغيير حرف: {len(store.settings['replace_rules'])} صيغة ({total:,}) - دائري", "info")
         err = start_hunt(chat_id, mid)
@@ -1303,7 +1342,7 @@ def webapp_state():
         sessions.append({"icon": icon, "name": name, "source": c.label, "note": note})
     return {
         "running": hunter.running,
-        "mode": s["mode"],
+        "mode": "replace" if "replace" in (s.get("sources") or []) else "",
         "mode_label": target_label(s),
         "sessions": {"active": len(pool.active), "total": len(pool.sessions), "list": sessions},
         "rules": len(s.get("replace_rules", [])),
@@ -1403,6 +1442,16 @@ def startup():
         with store.lock:
             store.data["settings"]["acc_interval"] = 0
             store.data["auto_interval_v1"] = True
+            store.save()
+    if not store.data.get("sources_v1"):
+        s = store.settings
+        mode = s.get("mode", "preset")
+        key = {"preset": f"preset:{s.get('preset', 'five')}", "template": "template",
+               "similar": "similar", "words": "words", "replace": "replace"}.get(mode)
+        with store.lock:
+            if key and not s.get("sources"):
+                store.data["settings"]["sources"] = [key]
+            store.data["sources_v1"] = True
             store.save()
     load_sessions()
     if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:

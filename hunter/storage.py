@@ -9,6 +9,8 @@ DEFAULT_SETTINGS = {
     "similar_base": "",
     "replace_rules": [],       # [{"base": "vcvcv", "pos": [1], "chars": ["aeo"]}]
     "replace_rev": 0,          # bumped on every rules change (live reload)
+    "sources": [],             # selected hunting methods, hunted together (endless)
+    "sources_rev": 0,          # bumped when the selection changes (live reload)
     "preset": "five",
     "template": "LLLLL",
     "prefix": "",
