@@ -154,12 +154,32 @@ def get_claimer():
 
 
 # ---------------------------------------------------------------- hunter
+def parse_channel(text):
+    """'@name', 't.me/name' or '-100123...' -> chat id usable by the Bot API."""
+    t = (text or "").strip()
+    if re.fullmatch(r"-100\d{5,}", t):
+        return t
+    name = normalize(t)
+    return f"@{name}" if is_valid(name) else ""
+
+
+def post_to_channel(username):
+    """Announce a claimed username in the owner's channel (claimed ones only)."""
+    channel = store.settings.get("notify_channel") or os.environ.get("NOTIFY_CHAT", "").strip()
+    if not channel:
+        return
+    if bot.send(channel, f"🔒 <b>تم صيد يوزر جديد</b>\n\n👤 @{username}") is None:
+        error(f"📢 ما گدرت أنشر بالقناة {channel}: {bot.last_error}")
+
+
 def on_found(username, status, source, claim_result):
     chat_id = hunt_ctx["chat_id"]
+    claimed = bool(claim_result and claim_result[0])
+    if claimed:
+        post_to_channel(username)
     if not chat_id:
         return
     mode = store.settings.get("notify", "claimed")
-    claimed = bool(claim_result and claim_result[0])
     if mode == "off" or (mode == "claimed" and not claimed):
         return  # still saved in results + shown on the dashboard
     if status == checker.FRAGMENT:
@@ -741,6 +761,7 @@ def settings_menu():
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
+        [btn(f"📢 قناة الإشعارات: {s.get('notify_channel') or '—'}", "set_channel")],
         [btn(f"♻️ تشغيل الصيد تلقائياً بعد إعادة التشغيل: {'✅' if s.get('auto_resume') else '❌'}",
              "toggle_resume")],
         [btn("📜 سجل الأخطاء", "errors"), btn("💾 نسخ احتياطي الحين", "backup_now")],
@@ -890,6 +911,7 @@ def run_claim_list(chat_id, names):
         if ok:
             event(f"🔒 انحجز @{n} (يدوي)", "ok")
             store.add_found(n, checker.AVAILABLE, "manual", claimed=True)
+            post_to_channel(n)
             bot.send(chat_id, f"🔒 <b>تم الحجز!</b> @{n}\n{html.escape(msg)}")
         else:
             error(f"ما انحجز @{n}: {msg}")
@@ -1045,6 +1067,13 @@ PROMPTS = {
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-5 حتى ما يصير فلود."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 1)"),
+    "set_channel": ("channel", "📢 <b>قناة الإشعارات</b>\n\n"
+                               "كل يوزر <b>ينحجز</b> ينشره البوت بالقناة.\n\n"
+                               "1️⃣ ضيف البوت <b>مشرف</b> بالقناة ويّا صلاحية النشر.\n"
+                               "2️⃣ دز رابط القناة أو يوزرها، مثل <code>@mychannel</code> أو "
+                               "<code>https://t.me/mychannel</code>\n"
+                               "(للقناة الخاصة دز الآيدي اللي يبدي بـ <code>-100</code>)\n\n"
+                               "دز <code>-</code> لإلغاء الربط."),
     "set_acc_interval": ("acc_interval", "🐢 <b>فاصل فحص الحساب</b>\n\n"
                                          "✅ <b>الأفضل: دز <code>0</code> = تلقائي</b>\n"
                                          "البوت يبدي من 4 ثواني، ويسرّع كل حساب ماشي زين لحد 2.5ث، "
@@ -1110,6 +1139,19 @@ def handle_input(key, text):
             return "⚠️ أرسل رقم بين 0 و 120."
         store.set("delay", v)
         return f"✅ التأخير: {v} ثانية"
+    if key == "channel":
+        if text.strip() == "-":
+            store.set("notify_channel", "")
+            return "✅ انلغى ربط القناة."
+        channel = parse_channel(text)
+        if not channel:
+            return "⚠️ ما فهمت القناة. دز مثل <code>@mychannel</code> أو رابطها."
+        if bot.send(channel, "✅ <b>تم ربط القناة ببوت الصيد</b>\nكل يوزر ينحجز راح ينشر هنا.") is None:
+            return (f"⚠️ ما گدرت أنشر بـ {html.escape(channel)}.\n"
+                    f"السبب: <code>{html.escape(bot.last_error)}</code>\n\n"
+                    "تأكد إن البوت <b>مشرف</b> بالقناة وعنده صلاحية نشر الرسائل، وبعدها دزها مرة ثانية.")
+        store.set("notify_channel", channel)
+        return f"✅ انربطت القناة {html.escape(channel)}. دزيت بيها رسالة تجربة."
     if key == "acc_interval":
         t = text.strip().lower()
         try:
