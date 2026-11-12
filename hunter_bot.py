@@ -1308,8 +1308,16 @@ def handle_callback(cq):
             bot.send(chat_id, err, main_menu())
     elif data == "backup_now":
         ok = backup.backup(force=True)
-        bot.send(chat_id, "💾 تم حفظ نسخة احتياطية (الملف المثبّت بالمحادثة)." if ok
-                 else f"⚠️ فشل الحفظ: {html.escape(backup.last_error)}", settings_menu())
+        head = ("💾 <b>تم الحفظ</b>، وهذا فحص النسخة:" if ok
+                else f"⚠️ <b>فشل الحفظ</b>: {html.escape(backup.last_error)}\nوهذا فحص النسخة الموجودة:")
+        try:
+            _good, lines = backup.verify()
+        except Exception as e:  # noqa: BLE001
+            _good, lines = False, [f"❌ خطأ بالفحص: {html.escape(repr(e))}"]
+        env_n = len(env_sessions())
+        tip = (f"\n\n🔐 جلسات محفوظة برندر (TG_SESSIONS): <b>{env_n}</b>"
+               + ("" if env_n else " — يُفضّل تحطها هناك حتى ما تروح أبداً"))
+        bot.send(chat_id, head + "\n\n" + "\n".join(lines) + tip, settings_menu())
     elif data == "cycle_notify":
         order = ["claimed", "off", "all"]
         cur = store.settings.get("notify", "claimed")

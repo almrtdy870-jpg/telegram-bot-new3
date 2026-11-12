@@ -69,6 +69,41 @@ class TelegramBackup:
         self.blocked = status == "error"
         return status
 
+    def verify(self):
+        """Read the pinned backup back from Telegram and compare it with the
+        live data. Returns (ok, list_of_report_lines)."""
+        lines = [f"• المحادثة: <code>{self.chat_id}</code>"]
+        if not self.chat_id:
+            return False, lines + ["❌ ماكو محادثة للنسخ (حط ADMIN_IDS برندر)"]
+        chat = self.bot.call("getChat", chat_id=self.chat_id)
+        if chat is None:
+            return False, lines + ["❌ getChat فشل: البوت ما گدر يقرا المحادثة"]
+        pinned = chat.get("pinned_message")
+        if not pinned:
+            return False, lines + ["❌ ماكو رسالة مثبّتة بالمحادثة (التثبيت انلغى؟)"]
+        doc = pinned.get("document") or {}
+        lines.append(f"• المثبّت: رسالة {pinned.get('message_id')} — {doc.get('file_name', 'مو ملف')}")
+        if doc.get("file_name") != FILENAME:
+            return False, lines + ["❌ الرسالة المثبّتة مو ملف النسخة. ألغِ تثبيت غيرها وخلي بس ملف النسخة."]
+        raw = self.bot.download_text(doc["file_id"], limit=20_000_000)
+        if not raw:
+            return False, lines + ["❌ ما گدرت أنزّل الملف المثبّت"]
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return False, lines + ["❌ الملف المثبّت تالف"]
+        st = data.get("settings", {})
+        mine = self.store.data
+        lines.append(f"• بالملف: {len(st.get('replace_rules', []))} صيغة، "
+                     f"{len(data.get('sessions', []))} جلسة، {len(data.get('found', []))} نتيجة")
+        lines.append(f"• بالبوت هسه: {len(mine['settings'].get('replace_rules', []))} صيغة، "
+                     f"{len(mine.get('sessions', []))} جلسة، {len(mine.get('found', []))} نتيجة")
+        same = (len(st.get("replace_rules", [])) == len(mine["settings"].get("replace_rules", []))
+                and len(data.get("sessions", [])) == len(mine.get("sessions", [])))
+        if not same:
+            return False, lines + ["❌ الملف المثبّت قديم وما يطابق البيانات الحالية"]
+        return True, lines + ["✅ النسخة سليمة وتطابق البيانات الحالية"]
+
     # -- backup ---------------------------------------------------------
     def backup(self, force=False) -> bool:
         if not self.chat_id:
