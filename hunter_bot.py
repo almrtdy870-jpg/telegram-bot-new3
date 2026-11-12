@@ -35,7 +35,7 @@ from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
-from hunter.generator import source_label
+from hunter.generator import MAX_COMBO_NAMES, clean_parts, combo_names, source_label
 from hunter.trends import KIND_LABEL, fetch_trends, formulas_for, usable
 from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS,
                               clean_chars, replace_count, replace_stream, rule_label,
@@ -200,7 +200,19 @@ def on_maybe(names):
                       + "\n\n💡 ضيف جلسة من 🔑 الجلسات حتى ينفحصن صح وينحجزن.")
 
 
-hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe)
+def on_combo(names):
+    """Free word combinations found (not claimed): one batched message."""
+    chat_id = hunt_ctx["chat_id"]
+    if not chat_id or store.settings.get("notify", "claimed") == "off":
+        return
+    rows = [[btn(f"📌 {n}", f"claim:{n}")] for n in names[:8]]
+    bot.send(chat_id, f"🧩 <b>أسماء مركّبة متاحة ({len(names)})</b>\n\n"
+                      + "\n".join(f"• @{n}" for n in names[:40])
+                      + "\n\nاضغط 📌 على اللي يعجبك حتى أحجزه بقناة. الباقي محفوظ بـ 🏆 النتائج.",
+             {"inline_keyboard": rows})
+
+
+hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe, on_combo)
 
 # ---------------------------------------------------------------- texts
 CLAIM_LABELS = {"off": "إيقاف", "channel": "قناة", "account": "حسابي"}
@@ -342,7 +354,8 @@ def modes_text():
             "🧬 <b>بحث مشابه</b>: يوزرات قريبة من يوزر تحدده\n"
             "✍️ <b>قالب مخصص</b>: شكل تكتبه بنفسك (L D X ...)\n"
             "📜 <b>قائمة كلمات</b>: كلمات تدزها أو ملف .txt\n"
-            "📈 <b>ترند المزاد</b>: يجيب أقوى يوزرات Fragment ويصيد على تنويعاتها")
+            "📈 <b>ترند المزاد</b>: يجيب أقوى يوزرات Fragment ويصيد على تنويعاتها\n"
+            "🧩 <b>تركيب كلمات</b>: يركّب كلمتين (gold + wallet) ويلگى الأسماء الفارغة")
 
 
 def modes_menu():
@@ -350,6 +363,7 @@ def modes_menu():
         [btn("🎯 أنواع جاهزة", "presets"), btn("🔤 تغيير حرف بالطلب", "replace")],
         [btn("🧬 بحث مشابه", "set_similar"), btn("✍️ قالب مخصص", "set_template")],
         [btn("📜 قائمة كلمات", "set_words"), btn("📈 ترند المزاد", "trends")],
+        [btn("🧩 تركيب كلمات", "combo")],
     ]
     for i, k in enumerate(store.settings.get("sources") or []):
         rows.append([btn(f"❌ إلغاء: {source_label(store.settings, k)}"[:60], f"src_off:{i}")])
@@ -438,6 +452,52 @@ def add_rules(new_rules):
         set_rules(rules)
         set_source("replace", True)
     return added, skipped
+
+
+# ---------------------------------------------------------------- word combinations
+def combo_total():
+    s = store.settings
+    return len(combo_names(s.get("combo_a", []), s.get("combo_b", []), s.get("combo_both", False),
+                           s.get("prefix", ""), s.get("suffix", "")))
+
+
+def combo_text():
+    s = store.settings
+    a, b = s.get("combo_a", []), s.get("combo_b", [])
+    show = lambda ws: (" ".join(ws[:12]) + (" ..." if len(ws) > 12 else "")) if ws else "— فارغة"
+    text = ("🧩 <b>تركيب كلمات</b>\n\n"
+            "تنطيني قائمتين، وأركّب كل كلمة من الأولى ويّا كل كلمة من الثانية، "
+            "وأفحص أي اسم <b>فارغ</b>:\n"
+            "<code>gold</code> + <code>wallet</code> ← <code>goldwallet</code>\n\n"
+            f"1️⃣ القائمة الأولى ({len(a)}): <code>{html.escape(show(a))}</code>\n"
+            f"2️⃣ القائمة الثانية ({len(b)}): <code>{html.escape(show(b))}</code>\n"
+            f"• عدد الأسماء بالدورة: <b>{combo_total():,}</b>" + (f" (الحد {MAX_COMBO_NAMES:,})" if a and b else "") + "\n")
+    on = "combo" in (s.get("sources") or [])
+    text += f"• الحالة: {'✅ مختارة للصيد' if on else '❌ مو مختارة'}\n"
+    text += ("• المتاح: <b>ينحجز تلقائياً</b>" if s.get("combo_claim")
+             else "• المتاح: <b>يجيك بقائمة وأنت تختار شنو ينحجز</b> (أأمن للحسابات)")
+    return text
+
+
+def combo_menu():
+    s = store.settings
+    on = "combo" in (s.get("sources") or [])
+    ready = bool(s.get("combo_a") and s.get("combo_b"))
+    rows = [[btn("1️⃣ القائمة الأولى", "combo_a"), btn("2️⃣ القائمة الثانية", "combo_b")],
+            [btn(f"🔀 بالاتجاهين (walletgold هم): {'✅' if s.get('combo_both') else '❌'}", "combo_both")],
+            [btn(f"🔒 حجز تلقائي: {'✅' if s.get('combo_claim') else '❌'}", "combo_claim")]]
+    if ready:
+        rows.append([btn("❌ إلغاء من الصيد" if on else "✅ اختارها للصيد", "combo_toggle")])
+    rows.append([btn("🗑 مسح القائمتين", "combo_clear"), btn("🔙 رجوع", "modes")])
+    return {"inline_keyboard": rows}
+
+
+def combo_changed():
+    """Lists changed: restart this method so a running hunt uses the new names."""
+    if "combo" in (store.settings.get("sources") or []):
+        set_source("combo", False)
+        if store.settings.get("combo_a") and store.settings.get("combo_b"):
+            set_source("combo", True)
 
 
 # ---------------------------------------------------------------- auction trends
@@ -1134,6 +1194,31 @@ def handle_callback(cq):
     elif data == "restore_fresh":
         backup.blocked = False
         bot.edit(chat_id, mid, "🆕 تمام، أكمّل بالبيانات الحالية، والنسخ الاحتياطي رجع يشتغل.", main_menu())
+    elif data == "combo":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, combo_text(), combo_menu())
+    elif data in ("combo_a", "combo_b"):
+        states[chat_id] = data
+        which = "الأولى (بداية الاسم)" if data == "combo_a" else "الثانية (نهاية الاسم)"
+        bot.send(chat_id, f"📝 دز كلمات القائمة <b>{which}</b>، كل كلمة بسطر أو بينهن مسافة.\n"
+                          "حروف إنجليزية وأرقام بس. (تبدّل القائمة القديمة)", BACK)
+    elif data in ("combo_both", "combo_claim"):
+        store.set(data, not s.get(data))
+        if data == "combo_both":
+            combo_changed()
+        bot.edit(chat_id, mid, combo_text(), combo_menu())
+    elif data == "combo_toggle":
+        on = "combo" in (s.get("sources") or [])
+        if not on and not (s.get("combo_a") and s.get("combo_b")):
+            bot.edit(chat_id, mid, combo_text(), combo_menu())
+            return
+        set_source("combo", not on)
+        bot.edit(chat_id, mid, combo_text() + ("" if on else live_src_note()), combo_menu())
+    elif data == "combo_clear":
+        store.set("combo_a", [])
+        store.set("combo_b", [])
+        set_source("combo", False)
+        bot.edit(chat_id, mid, combo_text(), combo_menu())
     elif data == "trends":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, trends_text(), trends_menu())
@@ -1405,7 +1490,7 @@ def handle_message(msg):
                          daemon=True).start()
         return
 
-    if "document" in msg and state in ("words", "rep_bulk"):
+    if "document" in msg and state in ("words", "rep_bulk", "combo_a", "combo_b"):
         content = bot.download_text(msg["document"]["file_id"])
         if content is None:
             bot.send(chat_id, "⚠️ ما گدرت أقرأ الملف (الحد 5MB).")
@@ -1414,6 +1499,19 @@ def handle_message(msg):
 
     if state == "similar":
         start_similar(chat_id, text)
+        return
+    if state in ("combo_a", "combo_b"):
+        states.pop(chat_id, None)
+        words = clean_parts(text)
+        if not words:
+            bot.send(chat_id, "⚠️ ماكو كلمة صالحة. دز كلمات إنجليزية مثل <code>gold crypto iraq</code>", BACK)
+            return
+        store.set(state, words)
+        combo_changed()
+        other = "combo_b" if state == "combo_a" else "combo_a"
+        hint = ("" if store.settings.get(other) else
+                "\n\n👈 هسه دز القائمة " + ("الثانية" if state == "combo_a" else "الأولى") + ".")
+        bot.send(chat_id, f"✅ انحفظت {len(words)} كلمة." + hint + "\n\n" + combo_text(), combo_menu())
         return
     if state == "trend_word":
         states.pop(chat_id, None)

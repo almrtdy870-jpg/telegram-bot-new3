@@ -9,6 +9,10 @@ DEFAULT_SETTINGS = {
     "similar_base": "",
     "replace_rules": [],       # [{"base": "vcvcv", "pos": [1], "chars": ["aeo"]}]
     "replace_rev": 0,          # bumped on every rules change (live reload)
+    "combo_a": [],             # word combinations: first words
+    "combo_b": [],             # ...second words
+    "combo_both": False,       # also try second+first
+    "combo_claim": False,      # claim free combinations by itself (default: just list them)
     "sources": [],             # selected hunting methods, hunted together (endless)
     "sources_rev": 0,          # bumped when the selection changes (live reload)
     "preset": "five",

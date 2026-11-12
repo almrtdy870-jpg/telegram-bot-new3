@@ -386,6 +386,47 @@ def replace_cycle(settings, on_round=None):
         yield name
 
 
+# ---------------------------------------------------------------- word combinations
+MAX_COMBO_WORDS = 200      # per list
+MAX_COMBO_NAMES = 20_000   # per round
+COMBO_NAMES = set()        # names of the current combination round (read by the engine)
+
+
+def clean_parts(text):
+    """Words for a combination list: lowercase a-z 0-9 _, de-duplicated."""
+    out = []
+    for w in (text or "").replace(",", " ").replace("،", " ").split():
+        w = normalize(w)
+        if w and w.isascii() and w.replace("_", "").isalnum() and len(w) <= 20 and w not in out:
+            out.append(w)
+    return out[:MAX_COMBO_WORDS]
+
+
+def combo_names(first, second, both=False, prefix="", suffix=""):
+    """Every first+second name (and second+first when `both`), valid ones only."""
+    names, seen = [], set()
+    for a in first:
+        for b in second:
+            for joined in ((a + b, b + a) if both else (a + b,)):
+                name = f"{prefix}{joined}{suffix}"
+                if name not in seen and is_valid(name):
+                    seen.add(name)
+                    names.append(name)
+                    if len(names) >= MAX_COMBO_NAMES:
+                        return names
+    return names
+
+
+def combo_stream(settings):
+    names = combo_names(settings.get("combo_a", []), settings.get("combo_b", []),
+                        settings.get("combo_both", False),
+                        settings.get("prefix", ""), settings.get("suffix", ""))
+    COMBO_NAMES.clear()
+    COMBO_NAMES.update(names)
+    random.shuffle(names)
+    yield from names
+
+
 # ---------------------------------------------------------------- multi-source hunting
 def source_label(settings, key) -> str:
     if key.startswith("preset:"):
@@ -399,6 +440,8 @@ def source_label(settings, key) -> str:
         return f"كلمات ({len(settings.get('words', []))})"
     if key == "replace":
         return f"تغيير حرف ({len(settings.get('replace_rules', []))} صيغة)"
+    if key == "combo":
+        return f"تركيب كلمات ({len(settings.get('combo_a', []))}×{len(settings.get('combo_b', []))})"
     return key
 
 
@@ -414,6 +457,8 @@ def _source_once(settings, key, on_round):
         return words_stream(settings.get("words", []), prefix, suffix, settings.get("word_variants", False))
     if key == "replace":
         return replace_cycle(settings, lambda r: on_round and on_round(source_label(settings, key), r))
+    if key == "combo":
+        return combo_stream(settings)
     return iter(())
 
 
@@ -452,13 +497,21 @@ def multi_stream(settings, on_round=None):
                     active[k] = source_cycle(settings, k, on_round)
         if not active:
             return
+        produced = False
         for k in list(active):
             try:
-                yield next(active[k])
+                name = next(active[k])
             except StopIteration:
                 del active[k]
+                continue
+            if name == IDLE:
+                continue  # this method is between rounds: don't slow the others down
+            produced = True
+            yield name
             if settings.get("sources_rev", 0) != rev:
                 break
+        if not produced and active:
+            yield IDLE  # every method is waiting for its next round
 
 
 def make_stream(settings, seen=None, on_round=None):

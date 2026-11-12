@@ -8,7 +8,7 @@ that can't be claimed yet go to a claim queue the same way.
 import threading
 import time
 
-from . import checker
+from . import checker, generator
 from .claimer import fmt_wait
 from .events import error, event
 from .generator import make_stream
@@ -17,9 +17,11 @@ MAX_QUEUE = 150  # keep it small: every queued name costs a rate-limited account
 
 
 class Hunter:
-    def __init__(self, store, on_found, on_status, claimer_getter, on_maybe=None):
+    def __init__(self, store, on_found, on_status, claimer_getter, on_maybe=None, on_combo=None):
         self.on_maybe = on_maybe        # (list_of_names) batched unverified results
         self.maybe_buf = []
+        self.on_combo = on_combo        # (list_of_names) free word combinations, not claimed
+        self.combo_buf = []
         self.store = store
         # on_found(username, status, source, claim_result)
         self.on_found = on_found
@@ -148,6 +150,8 @@ class Hunter:
             if name == "":  # every selected method is between rounds
                 time.sleep(1)
                 continue
+            if name in self.reported:  # already found / claimed: don't spend checks on it
+                continue
             claimer = self.get_claimer()
             status, source = checker.full_check(name, claimer)
             self.last_checked = name
@@ -192,6 +196,13 @@ class Hunter:
         if name in self.reported:
             return
         self.reported.add(name)
+        if name in generator.COMBO_NAMES and not self.store.settings.get("combo_claim"):
+            # free word combinations are plentiful: list them, the owner picks
+            event(f"🧩 متاح @{name}", "ok")
+            self.store.add_found(name, checker.AVAILABLE, source)
+            with self._q_lock:
+                self.combo_buf.append(name)
+            return
         mode = self.store.settings.get("claim_mode", "off")
         if mode != "off" and claimer is not None and claimer.ready:
             self._try_claim(name, source, claimer)
@@ -241,8 +252,11 @@ class Hunter:
     def _flush_maybe(self):
         with self._q_lock:
             names, self.maybe_buf = self.maybe_buf, []
+            combos, self.combo_buf = self.combo_buf, []
         if names and self.on_maybe:
             self.on_maybe(names)
+        if combos and self.on_combo:
+            self.on_combo(combos)
 
     def summary(self, final=False):
         s = self.stats
