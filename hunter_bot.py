@@ -1729,6 +1729,16 @@ def _startup_rest():
                 store.data["settings"]["sources"] = [key]
             store.data["sources_v1"] = True
             store.save()
+    if not store.data.get("trend_single_v1"):
+        # one-time: trend formulas now add ONE character; drop the old two-digit ones
+        rules = list(store.settings.get("replace_rules", []))
+        keep = [r for r in rules if not (r.get("src") == "trend" and len(r.get("pos", [])) == 2
+                                         and len(r.get("base", "")) >= 6)]
+        if len(keep) != len(rules):
+            set_rules(keep)
+        with store.lock:
+            store.data["trend_single_v1"] = True
+            store.save()
     load_sessions()
     if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:
         chat_id = store.data["resume_chat"]

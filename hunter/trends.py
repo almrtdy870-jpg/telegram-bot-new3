@@ -93,7 +93,12 @@ def usable(name: str) -> bool:
 def formulas_for(word: str):
     """Change-letter rules around a strong word: lucky digits and clean letters."""
     w = normalize(word)
-    lines = [f"{w}* 1235689", f"{w}** 689", f"{w}* xzs"]
+    if len(w) >= 4:
+        # one extra character only: a lucky digit or a clean letter
+        lines = [f"{w}* 1235689", f"{w}* xzs"]
+    else:
+        # 3-letter words need two characters to reach Telegram's 5-char minimum
+        lines = [f"{w}** 689"]
     rules = []
     for line in lines:
         rule, _err = parse_rule_line(line)
