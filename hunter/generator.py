@@ -13,6 +13,13 @@ Example: "L=L=L" -> "aabbc", "LDDDD" -> "k4821", "pro_LLL" -> "pro_xqz".
 import itertools
 import random
 import string
+import time
+
+# A method whose whole round is tiny (e.g. one word) would otherwise re-check the
+# same names many times a second. Rounds are spaced at least this far apart;
+# meanwhile the stream yields IDLE so the workers can do other methods.
+MIN_ROUND_SECONDS = 120
+IDLE = ""
 
 from .rules import is_valid, normalize
 
@@ -338,6 +345,7 @@ def replace_cycle(settings, on_round=None):
     rnd, queue, loaded, seen = 1, [], set(), set()
     rev = object()
     fresh_round = True  # nothing yielded yet in the current round
+    round_started = time.time()
     while True:
         cur = settings.get("replace_rev", 0)
         if cur != rev:
@@ -358,6 +366,10 @@ def replace_cycle(settings, on_round=None):
         if not queue:
             if fresh_round or not settings.get("replace_rules"):
                 return  # nothing (left) to check
+            if time.time() - round_started < MIN_ROUND_SECONDS:
+                yield IDLE  # small round: wait before repeating it
+                continue
+            round_started = time.time()
             rnd += 1
             seen.clear()
             loaded = set()
@@ -410,11 +422,14 @@ def source_cycle(settings, key, on_round=None):
     rnd = 1
     while True:
         produced = False
+        started = time.time()
         for name in _source_once(settings, key, on_round):
             produced = True
             yield name
         if not produced:
             return  # nothing to hunt (e.g. empty word list)
+        while time.time() - started < MIN_ROUND_SECONDS:
+            yield IDLE  # small round: wait before repeating it
         rnd += 1
         if on_round:
             on_round(source_label(settings, key), rnd)

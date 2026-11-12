@@ -888,8 +888,16 @@ def handle_input(key, text):
         return (f"✅ تم حفظ {len(tpls)} قالب" + (" — تنصاد سوه مخلوطة" if len(tpls) > 1 else "")
                 + f"\n{lines}\nالمجموع: ~{total:,} احتمال (دائري)" + live_src_note())
     if key == "words":
+        if "*" in text:
+            # these are change-letter formulas pasted into the word list by mistake
+            rules = [r for r, _e in (parse_rule_line(l) for l in text.splitlines() if l.strip()) if r]
+            added, _skipped = add_rules(rules)
+            store.set("words", [])
+            set_source("words", False)
+            return (f"✅ هاي <b>صيغ</b> مو كلمات، فحطيتها بمكانها الصحيح:\n"
+                    f"🔤 تغيير حرف بالطلب ← انضافت <b>{added}</b> صيغة (دائري)." + live_src_note())
         words = [normalize(w) for w in text.replace(",", "\n").split()]
-        words = list(dict.fromkeys(w for w in words if w))
+        words = list(dict.fromkeys(w for w in words if w and is_valid(w, min_len=3)))
         store.set("words", words)
         set_source("words", False)
         set_source("words", bool(words))
@@ -1430,6 +1438,28 @@ def poll_forever():
             threading.Thread(target=dispatch, args=(upd,), daemon=True).start()
 
 
+def backup_loop():
+    """Periodic Telegram backups, independent from the rest of start-up."""
+    _restored.wait(120)
+    try:
+        if backup.chat_id:
+            if not backup.backup(force=not backup.message_id):
+                error(f"💾 فشل النسخ الاحتياطي: {backup.last_error}")
+    except Exception as e:  # noqa: BLE001
+        error(f"💾 فشل النسخ الاحتياطي: {e}")
+    while True:
+        time.sleep(30)
+        try:
+            if store.dirty and time.time() - backup.last_backup >= backup.interval:
+                if not backup.backup():
+                    error(f"💾 فشل النسخ الاحتياطي: {backup.last_error}")
+        except Exception as e:  # noqa: BLE001
+            error(f"💾 فشل النسخ الاحتياطي: {e}")
+
+
+_restored = threading.Event()
+
+
 def startup():
     """Restore the Telegram backup, reconnect sessions, resume the hunt."""
     try:
@@ -1437,6 +1467,15 @@ def startup():
             event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
     except Exception as e:  # noqa: BLE001
         error(f"فشل الاسترجاع: {e}")
+    finally:
+        _restored.set()
+    try:
+        _startup_rest()
+    except Exception as e:  # noqa: BLE001
+        error(f"خطأ بالتشغيل: {e!r}"[:200])
+
+
+def _startup_rest():
     if not store.data.get("auto_interval_v1"):
         # one-time: the previous version stored a fixed 4s; switch to automatic
         with store.lock:
@@ -1461,9 +1500,6 @@ def startup():
         err = start_hunt(chat_id)
         if err:
             bot.send(chat_id, err, main_menu())
-    if backup.chat_id:
-        backup.backup(force=not backup.message_id)
-    backup.run_forever()
 
 
 def _final_backup():
@@ -1476,6 +1512,7 @@ def _final_backup():
 atexit.register(_final_backup)
 event("تم تشغيل البوت", "ok")
 threading.Thread(target=startup, daemon=True).start()
+threading.Thread(target=backup_loop, daemon=True).start()
 
 # under gunicorn (webhook mode) register the webhook on import
 if WEBHOOK_URL:

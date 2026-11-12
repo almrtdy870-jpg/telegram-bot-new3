@@ -145,6 +145,9 @@ class Hunter:
             name = self._next()
             if name is None:
                 break
+            if name == "":  # every selected method is between rounds
+                time.sleep(1)
+                continue
             claimer = self.get_claimer()
             status, source = checker.full_check(name, claimer)
             self.last_checked = name
