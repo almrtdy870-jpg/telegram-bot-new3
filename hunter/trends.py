@@ -94,8 +94,8 @@ def formulas_for(word: str):
     """Change-letter rules around a strong word: lucky digits and clean letters."""
     w = normalize(word)
     if len(w) >= 4:
-        # one extra character only: a lucky digit or a clean letter
-        lines = [f"{w}* 1235689", f"{w}* xzs"]
+        # one extra character only: a single lucky digit
+        lines = [f"{w}* 1235689"]
     else:
         # 3-letter words need two characters to reach Telegram's 5-char minimum
         lines = [f"{w}** 689"]

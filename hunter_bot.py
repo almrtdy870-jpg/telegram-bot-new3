@@ -498,7 +498,7 @@ def trends_text():
     n_rules = sum(1 for r in store.settings.get("replace_rules", []) if r.get("src") == "trend")
     text = ("📈 <b>ترند المزاد</b>\n\n"
             "البوت يقرا مزاد Fragment ويجيب أقوى اليوزرات (المنباعة والمزايد عليها)، "
-            "وأنت تختار، ويصيد على <b>تنويعاتها</b> بأرقام الحظ والحروف.\n\n"
+            "وأنت تختار، ويصيد على <b>الكلمة + رقم حظ واحد</b> بشكل دائري.\n\n"
             f"• الجلب اليومي: {'✅ شغّال' if t['auto'] else '❌ متوقف'}\n"
             f"• آخر جلب: {clock(t['last']) if t['last'] else '—'}\n"
             f"• صيغ الترند المضافة: {n_rules} / {MAX_TREND_RULES}\n")
@@ -1153,7 +1153,7 @@ def handle_callback(cq):
     elif data == "tr_word":
         states[chat_id] = "trend_word"
         bot.send(chat_id, "➕ دز كلمة قوية أو أكثر (كل وحدة بسطر)، مثل <code>danbao</code>.\n"
-                          "أسويلها الصيغ وحدي: الكلمة + أرقام الحظ (8، 6، 9...) والحروف (x z s).", BACK)
+                          "أسويلها الصيغة وحدي: الكلمة + رقم حظ واحد (1 2 3 5 6 8 9)، وتنصاد دائرياً.", BACK)
     elif data == "modes":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, modes_text(), modes_menu())
@@ -1739,6 +1739,16 @@ def _startup_rest():
             set_rules(keep)
         with store.lock:
             store.data["trend_single_v1"] = True
+            store.save()
+    if not store.data.get("trend_digit_v2"):
+        # one-time: trend formulas are a single lucky digit only; drop the letter ones
+        rules = list(store.settings.get("replace_rules", []))
+        keep = [r for r in rules if not (r.get("src") == "trend" and len(r.get("pos", [])) == 1
+                                         and not all(c.isdigit() for c in "".join(rule_sets(r))))]
+        if len(keep) != len(rules):
+            set_rules(keep)
+        with store.lock:
+            store.data["trend_digit_v2"] = True
             store.save()
     load_sessions()
     if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:
