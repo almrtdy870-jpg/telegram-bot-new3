@@ -35,6 +35,7 @@ from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
 from hunter.events import error, errors, event, events
 from hunter.generator import source_label
+from hunter.trends import KIND_LABEL, fetch_trends, formulas_for, usable
 from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_rule_line, rule_key, PRESETS, REPLACE_SETS,
                               clean_chars, replace_count, replace_stream, rule_label,
                               rule_sets,
@@ -336,14 +337,15 @@ def modes_text():
             "🔤 <b>تغيير حرف بالطلب</b>: صيغك، دائري ولحد 1000 صيغة\n"
             "🧬 <b>بحث مشابه</b>: يوزرات قريبة من يوزر تحدده\n"
             "✍️ <b>قالب مخصص</b>: شكل تكتبه بنفسك (L D X ...)\n"
-            "📜 <b>قائمة كلمات</b>: كلمات تدزها أو ملف .txt")
+            "📜 <b>قائمة كلمات</b>: كلمات تدزها أو ملف .txt\n"
+            "📈 <b>ترند المزاد</b>: يجيب أقوى يوزرات Fragment ويصيد على تنويعاتها")
 
 
 def modes_menu():
     rows = [
         [btn("🎯 أنواع جاهزة", "presets"), btn("🔤 تغيير حرف بالطلب", "replace")],
         [btn("🧬 بحث مشابه", "set_similar"), btn("✍️ قالب مخصص", "set_template")],
-        [btn("📜 قائمة كلمات", "set_words")],
+        [btn("📜 قائمة كلمات", "set_words"), btn("📈 ترند المزاد", "trends")],
     ]
     for i, k in enumerate(store.settings.get("sources") or []):
         rows.append([btn(f"❌ إلغاء: {source_label(store.settings, k)}"[:60], f"src_off:{i}")])
@@ -432,6 +434,127 @@ def add_rules(new_rules):
         set_rules(rules)
         set_source("replace", True)
     return added, skipped
+
+
+# ---------------------------------------------------------------- auction trends
+MAX_TREND_RULES = 100
+TREND_EVERY = 24 * 3600
+
+
+def tr():
+    return store.data.setdefault("trends", {"auto": True, "last": 0, "seen": [], "pending": []})
+
+
+def fetch_trends_now():
+    """Read Fragment and queue new strong names for approval. Return (new, error)."""
+    items, err = fetch_trends()
+    t = tr()
+    with store.lock:
+        t["last"] = time.time()
+        known = set(t["seen"]) | {p["name"] for p in t["pending"]}
+        new = [i for i in items if usable(i["name"]) and i["name"] not in known][:20]
+        t["pending"] = (t["pending"] + new)[:30]
+        store.save()
+    if err:
+        error(f"📈 ترند المزاد: {err}")
+    if new:
+        event(f"📈 ترند المزاد: {len(new)} كلمة جديدة بانتظار موافقتك", "info")
+    return len(new), err
+
+
+def accept_trends(names):
+    """Turn approved names into change-letter formulas. Return rules added."""
+    rules = []
+    for n in names:
+        rules += formulas_for(n)
+    added, _skipped = add_rules(rules)
+    t = tr()
+    with store.lock:
+        t["pending"] = [p for p in t["pending"] if p["name"] not in names]
+        t["seen"] = (t["seen"] + [n for n in names if n not in t["seen"]])[-2000:]
+        store.save()
+    # keep the automatic formulas bounded: drop the oldest ones
+    all_rules = list(store.settings.get("replace_rules", []))
+    trend_idx = [i for i, r in enumerate(all_rules) if r.get("src") == "trend"]
+    extra = len(trend_idx) - MAX_TREND_RULES
+    if extra > 0:
+        drop = set(trend_idx[:extra])
+        set_rules([r for i, r in enumerate(all_rules) if i not in drop])
+    return added
+
+
+def skip_trends():
+    t = tr()
+    with store.lock:
+        t["seen"] = (t["seen"] + [p["name"] for p in t["pending"]])[-2000:]
+        t["pending"] = []
+        store.save()
+
+
+def trends_text():
+    t = tr()
+    n_rules = sum(1 for r in store.settings.get("replace_rules", []) if r.get("src") == "trend")
+    text = ("📈 <b>ترند المزاد</b>\n\n"
+            "البوت يقرا مزاد Fragment ويجيب أقوى اليوزرات (المنباعة والمزايد عليها)، "
+            "وأنت تختار، ويصيد على <b>تنويعاتها</b> بأرقام الحظ والحروف.\n\n"
+            f"• الجلب اليومي: {'✅ شغّال' if t['auto'] else '❌ متوقف'}\n"
+            f"• آخر جلب: {clock(t['last']) if t['last'] else '—'}\n"
+            f"• صيغ الترند المضافة: {n_rules} / {MAX_TREND_RULES}\n")
+    if t["pending"]:
+        text += f"\n<b>بانتظار موافقتك ({len(t['pending'])}):</b>\n"
+        for i, p in enumerate(t["pending"][:10], 1):
+            price = f" — {KIND_LABEL.get(p['kind'], '')} {p['price']:,} TON" if p.get("price") else ""
+            text += f"{i}. <code>{p['name']}</code>{price}\n"
+        if len(t["pending"]) > 10:
+            text += f"... و{len(t['pending']) - 10} بعد\n"
+    else:
+        text += "\n📭 ماكو كلمات جديدة بانتظارك. اضغط 🔄 حتى أجيب الترند هسه."
+    return text
+
+
+def trends_menu():
+    t = tr()
+    rows, row = [], []
+    for p in t["pending"][:10]:
+        row.append(btn(f"✅ {p['name']}", f"tr_ok:{p['name']}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    if t["pending"]:
+        rows.append([btn("✅ صيد على الكل", "tr_all"), btn("❌ تجاهل الكل", "tr_skip")])
+    rows.append([btn("🔄 جيب الترند هسه", "tr_fetch")])
+    rows.append([btn(f"⏰ الجلب اليومي: {'✅' if t['auto'] else '❌'}", "tr_auto"),
+                 btn("➕ كلمة يدوية", "tr_word")])
+    rows.append([btn("🔙 رجوع", "modes")])
+    return {"inline_keyboard": rows}
+
+
+def trend_fetch_and_show(chat_id):
+    new, err = fetch_trends_now()
+    head = (f"📈 لگيت <b>{new}</b> كلمة جديدة.\n\n" if new else
+            ("⚠️ ما گدرت أقرا المزاد: " + html.escape(err) + "\n"
+             "تكدر تضيف الكلمات بإيدك من ➕ كلمة يدوية.\n\n" if err else "📭 ماكو كلمات جديدة هسه.\n\n"))
+    bot.send(chat_id, head + trends_text(), trends_menu())
+
+
+def trend_loop():
+    """Once a day: fetch the trend and ask the owner which names to hunt around."""
+    _restored.wait(120)
+    while True:
+        time.sleep(600)
+        try:
+            t = tr()
+            if not t["auto"] or time.time() - t["last"] < TREND_EVERY:
+                continue
+            new, _err = fetch_trends_now()
+            chat_id = backup.chat_id or store.data.get("resume_chat")
+            if new and chat_id:
+                bot.send(chat_id, f"📈 <b>ترند المزاد اليوم</b>: {new} كلمة جديدة.\n\n" + trends_text(),
+                         trends_menu())
+        except Exception as e:  # noqa: BLE001
+            error(f"📈 ترند المزاد: {e!r}"[:200])
 
 
 def live_note():
@@ -978,6 +1101,30 @@ def handle_callback(cq):
             set_source(k, False)
             event(f"❌ انلغت: {source_label(store.settings, k)}", "warn")
         bot.edit(chat_id, mid, modes_text(), modes_menu())
+    elif data == "trends":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, trends_text(), trends_menu())
+    elif data == "tr_fetch":
+        bot.send(chat_id, "⏳ جاري قراءة المزاد...")
+        threading.Thread(target=trend_fetch_and_show, args=(chat_id,), daemon=True).start()
+    elif data.startswith("tr_ok:") or data == "tr_all":
+        names = [p["name"] for p in tr()["pending"]] if data == "tr_all" else [data[6:]]
+        added = accept_trends(names) if names else 0
+        note = f"✅ انضافت <b>{added}</b> صيغة حول: {', '.join(names[:8])}" + live_src_note() if names else ""
+        bot.edit(chat_id, mid, (note + "\n\n" if note else "") + trends_text(), trends_menu())
+    elif data == "tr_skip":
+        skip_trends()
+        bot.edit(chat_id, mid, trends_text(), trends_menu())
+    elif data == "tr_auto":
+        t = tr()
+        with store.lock:
+            t["auto"] = not t["auto"]
+            store.save()
+        bot.edit(chat_id, mid, trends_text(), trends_menu())
+    elif data == "tr_word":
+        states[chat_id] = "trend_word"
+        bot.send(chat_id, "➕ دز كلمة قوية أو أكثر (كل وحدة بسطر)، مثل <code>danbao</code>.\n"
+                          "أسويلها الصيغ وحدي: الكلمة + أرقام الحظ (8، 6، 9...) والحروف (x z s).", BACK)
     elif data == "modes":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, modes_text(), modes_menu())
@@ -1201,6 +1348,18 @@ def handle_message(msg):
 
     if state == "similar":
         start_similar(chat_id, text)
+        return
+    if state == "trend_word":
+        states.pop(chat_id, None)
+        words = list(dict.fromkeys(normalize(w) for w in text.split()))
+        good = [w for w in words if usable(w)]
+        bad = [w for w in words if w and not usable(w)]
+        added = accept_trends(good) if good else 0
+        out = f"✅ انضافت <b>{added}</b> صيغة حول: {', '.join(good[:10])}" + live_src_note() if good \
+            else "⚠️ ماكو كلمة صالحة."
+        if bad:
+            out += f"\n🚫 تجاهلت: {', '.join(html.escape(b) for b in bad[:10])} (غير صالحة أو ماركة/كلمة ممنوعة)"
+        bot.send(chat_id, out, trends_menu())
         return
     if state == "rep_bulk":
         states.pop(chat_id, None)
@@ -1513,6 +1672,7 @@ atexit.register(_final_backup)
 event("تم تشغيل البوت", "ok")
 threading.Thread(target=startup, daemon=True).start()
 threading.Thread(target=backup_loop, daemon=True).start()
+threading.Thread(target=trend_loop, daemon=True).start()
 
 # under gunicorn (webhook mode) register the webhook on import
 if WEBHOOK_URL:
