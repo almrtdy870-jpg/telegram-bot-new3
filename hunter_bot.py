@@ -314,7 +314,9 @@ def btn(text, data):
 BACK = {"inline_keyboard": [[btn("🔙 رجوع", "menu")]]}
 
 
-WEBAPP_URL = f"{WEBHOOK_URL}/app" if WEBHOOK_URL.startswith("https://") else ""
+# The web dashboard (Mini App) is off unless ENABLE_WEBAPP=1 is set on the server.
+WEBAPP_URL = (f"{WEBHOOK_URL}/app" if WEBHOOK_URL.startswith("https://")
+              and os.environ.get("ENABLE_WEBAPP", "").strip() == "1" else "")
 
 
 def main_menu():
@@ -1780,6 +1782,15 @@ if WEBHOOK_URL:
 if WEBAPP_URL:  # the chat's menu button opens the dashboard
     bot.call("setChatMenuButton",
              menu_button={"type": "web_app", "text": "لوحة التحكم", "web_app": {"url": WEBAPP_URL}})
+else:  # normal command menu (/start ...) next to the message box
+    bot.call("setChatMenuButton", menu_button={"type": "commands"})
+    for _admin in (sorted(ADMIN_IDS) or [store.data.get("owner")]):
+        if _admin:  # also clear a per-chat button set by an earlier version
+            bot.call("setChatMenuButton", chat_id=_admin, menu_button={"type": "commands"})
+bot.call("setMyCommands", commands=[
+    {"command": "start", "description": "القائمة الرئيسية"},
+    {"command": "stop", "description": "إيقاف الصيد"},
+])
 
 if __name__ == "__main__":
     if WEBHOOK_URL:
