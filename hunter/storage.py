@@ -73,6 +73,17 @@ class Store:
             self.dirty = False
             return True
 
+    def force_load(self, loaded: dict):
+        """Replace everything with a backup the owner chose explicitly."""
+        with self.lock:
+            revs = (self.data["settings"].get("replace_rev", 0), self.data["settings"].get("sources_rev", 0))
+            self.data.update(loaded)
+            self.data["settings"] = {**DEFAULT_SETTINGS, **loaded.get("settings", {})}
+            # bump revisions so a running hunt reloads its formulas / methods
+            self.data["settings"]["replace_rev"] = max(revs[0], self.data["settings"].get("replace_rev", 0)) + 1
+            self.data["settings"]["sources_rev"] = max(revs[1], self.data["settings"].get("sources_rev", 0)) + 1
+            self.save()
+
     @property
     def settings(self):
         return self.data["settings"]

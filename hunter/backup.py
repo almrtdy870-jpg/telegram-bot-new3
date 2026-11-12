@@ -22,35 +22,59 @@ class TelegramBackup:
         self.message_id = None
         self.last_backup = 0.0
         self.last_error = ""
+        # True while a backup exists but could not be read: writing a new
+        # (empty) backup now would destroy the good one
+        self.blocked = False
         self._lock = threading.Lock()
 
     # -- restore --------------------------------------------------------
-    def restore(self) -> bool:
-        """Load the pinned backup. Return True when data was restored."""
+    def restore_once(self) -> str:
+        """One attempt. Returns 'restored', 'current' (backup not newer),
+        'none' (no backup exists yet) or 'error' (exists but unreadable)."""
         if not self.chat_id:
-            return False
+            return "none"
         chat = self.bot.call("getChat", chat_id=self.chat_id)
-        pinned = (chat or {}).get("pinned_message") or {}
+        if chat is None:
+            self.last_error = "ما گدرت أتصل بتليجرام (getChat)"
+            return "error"
+        pinned = chat.get("pinned_message") or {}
         doc = pinned.get("document") or {}
         if doc.get("file_name") != FILENAME:
-            return False
+            return "none"
         self.message_id = pinned.get("message_id")
         raw = self.bot.download_text(doc["file_id"], limit=20_000_000)
         if not raw:
-            return False
+            self.last_error = "ما گدرت أنزّل ملف النسخة الاحتياطية"
+            return "error"
         try:
             data = json.loads(raw)
         except ValueError:
             self.last_error = "ملف النسخة الاحتياطية تالف"
-            return False
+            return "error"
         self.message_id = data.get("_backup_msg") or self.message_id
         restored = self.store.load_backup(data)
         self.last_backup = time.time()
-        return restored
+        return "restored" if restored else "current"
+
+    def restore(self, attempts=6, wait=10) -> str:
+        """Restore with retries. While the result is 'error', backups stay
+        blocked so an unread backup is never overwritten by empty data."""
+        status = "error"
+        for i in range(attempts):
+            status = self.restore_once()
+            if status != "error":
+                break
+            if i < attempts - 1:
+                time.sleep(wait)
+        self.blocked = status == "error"
+        return status
 
     # -- backup ---------------------------------------------------------
     def backup(self, force=False) -> bool:
         if not self.chat_id:
+            return False
+        if self.blocked:
+            self.last_error = "النسخ متوقف: النسخة القديمة ما انقرت بعد"
             return False
         with self._lock:
             if not force and not self.store.dirty:

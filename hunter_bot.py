@@ -30,6 +30,7 @@ import time
 from flask import Flask, request
 
 from hunter import checker
+from hunter.backup import FILENAME as BACKUP_FILENAME
 from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
 from hunter.engine import Hunter
@@ -70,6 +71,7 @@ BACKUP_CHAT = (os.environ.get("BACKUP_CHAT_ID", "").strip()
 backup = TelegramBackup(bot, store, BACKUP_CHAT)
 
 states = {}   # chat id -> pending input state
+pending_restore = {}  # chat id -> backup data waiting for confirmation
 rep_tmp = {}  # chat id -> base word while choosing positions
 logins = {}   # chat id -> LoginFlow in progress
 hunt_ctx = {"chat_id": None, "status_msg": None}
@@ -1101,6 +1103,33 @@ def handle_callback(cq):
             set_source(k, False)
             event(f"❌ انلغت: {source_label(store.settings, k)}", "warn")
         bot.edit(chat_id, mid, modes_text(), modes_menu())
+    elif data == "restore_file_ok":
+        loaded = pending_restore.pop(chat_id, None)
+        if not loaded:
+            bot.edit(chat_id, mid, "⚠️ انتهت العملية، دز الملف مرة ثانية.", BACK)
+            return
+        store.force_load(loaded)
+        backup.blocked = False
+        event("♻️ استرجاع يدوي من ملف نسخة احتياطية", "ok")
+        threading.Thread(target=load_sessions, daemon=True).start()
+        n = len(store.settings.get("replace_rules", []))
+        bot.edit(chat_id, mid, f"✅ <b>تم الاسترجاع</b>: {n} صيغة، {len(store.data.get('sessions', []))} جلسة.\n"
+                               "الجلسات تتصل هسه. إذا الصيد متوقف اضغط ▶️.", main_menu())
+    elif data == "restore_retry":
+        status = backup.restore(attempts=2, wait=3)
+        if status == "restored":
+            event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
+            threading.Thread(target=_startup_rest, daemon=True).start()
+            bot.edit(chat_id, mid, "✅ <b>تم استرجاع بياناتك</b> (الصيغ، الإعدادات، الجلسات، النتائج).",
+                     main_menu())
+        elif status == "error":
+            bot.edit(chat_id, mid, f"⚠️ بعده ما انقرا: <code>{html.escape(backup.last_error)}</code>\n"
+                                   "جرّب بعد دقيقة.", RESTORE_KB)
+        else:
+            bot.edit(chat_id, mid, "ℹ️ ماكو نسخة أحدث من البيانات الحالية.", main_menu())
+    elif data == "restore_fresh":
+        backup.blocked = False
+        bot.edit(chat_id, mid, "🆕 تمام، أكمّل بالبيانات الحالية، والنسخ الاحتياطي رجع يشتغل.", main_menu())
     elif data == "trends":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, trends_text(), trends_menu())
@@ -1324,6 +1353,28 @@ def handle_message(msg):
         return
     text = (msg.get("text") or "").strip()
     state = states.get(chat_id)
+
+    # a backup file sent / forwarded by the owner: offer to restore it
+    if msg.get("document", {}).get("file_name") == BACKUP_FILENAME and not state:
+        raw = bot.download_text(msg["document"]["file_id"], limit=20_000_000)
+        try:
+            data = json.loads(raw or "")
+            st = data.get("settings", {})
+        except ValueError:
+            bot.send(chat_id, "⚠️ ما گدرت أقرا هذا الملف.", BACK)
+            return
+        pending_restore[chat_id] = data
+        when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(data.get("saved_at", 0) + TZ_OFFSET * 3600))
+        bot.send(chat_id, "💾 <b>ملف نسخة احتياطية</b>\n\n"
+                          f"• تاريخه: {when}\n"
+                          f"• الصيغ: <b>{len(st.get('replace_rules', []))}</b>\n"
+                          f"• الجلسات: <b>{len(data.get('sessions', []))}</b>\n"
+                          f"• النتائج: <b>{len(data.get('found', []))}</b>\n"
+                          f"• الكلمات: {len(st.get('words', []))}\n\n"
+                          "⚠️ الاسترجاع <b>يبدّل</b> بياناتك الحالية بهاي النسخة.",
+                 {"inline_keyboard": [[btn("✅ استرجع هاي النسخة", "restore_file_ok")],
+                                      [btn("❌ إلغاء", "menu")]]})
+        return
 
     if text.startswith("/start") or text.startswith("/menu"):
         states.pop(chat_id, None)
@@ -1597,19 +1648,33 @@ def poll_forever():
             threading.Thread(target=dispatch, args=(upd,), daemon=True).start()
 
 
+RESTORE_KB = {"inline_keyboard": [[{"text": "🔄 حاول الاسترجاع", "callback_data": "restore_retry"}],
+                                  [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh"}]]}
+
+
+def restore_failed_notice():
+    error(f"💾 فشل استرجاع النسخة الاحتياطية: {backup.last_error}")
+    if backup.chat_id:
+        bot.send(backup.chat_id,
+                 "⚠️ <b>ما گدرت أقرا النسخة الاحتياطية</b> بعد إعادة التشغيل.\n"
+                 f"السبب: <code>{html.escape(backup.last_error)}</code>\n\n"
+                 "بياناتك القديمة <b>بعدها محفوظة</b> بالملف المثبّت، وما راح أكتب فوگها.\n"
+                 "اضغط 🔄 حتى أحاول مرة ثانية.", RESTORE_KB)
+
+
 def backup_loop():
     """Periodic Telegram backups, independent from the rest of start-up."""
     _restored.wait(120)
     try:
         if backup.chat_id:
-            if not backup.backup(force=not backup.message_id):
+            if not backup.blocked and not backup.backup(force=not backup.message_id):
                 error(f"💾 فشل النسخ الاحتياطي: {backup.last_error}")
     except Exception as e:  # noqa: BLE001
         error(f"💾 فشل النسخ الاحتياطي: {e}")
     while True:
         time.sleep(30)
         try:
-            if store.dirty and time.time() - backup.last_backup >= backup.interval:
+            if not backup.blocked and store.dirty and time.time() - backup.last_backup >= backup.interval:
                 if not backup.backup():
                     error(f"💾 فشل النسخ الاحتياطي: {backup.last_error}")
         except Exception as e:  # noqa: BLE001
@@ -1622,10 +1687,15 @@ _restored = threading.Event()
 def startup():
     """Restore the Telegram backup, reconnect sessions, resume the hunt."""
     try:
-        if backup.restore():
+        status = backup.restore()
+        if status == "restored":
             event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
+        elif status == "error":
+            restore_failed_notice()
     except Exception as e:  # noqa: BLE001
-        error(f"فشل الاسترجاع: {e}")
+        backup.blocked = True
+        backup.last_error = str(e)
+        restore_failed_notice()
     finally:
         _restored.set()
     try:
