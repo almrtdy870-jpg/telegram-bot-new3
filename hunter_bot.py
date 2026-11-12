@@ -1311,9 +1311,9 @@ def handle_callback(cq):
         head = ("💾 <b>تم الحفظ</b>، وهذا فحص النسخة:" if ok
                 else f"⚠️ <b>فشل الحفظ</b>: {html.escape(backup.last_error)}\nوهذا فحص النسخة الموجودة:")
         try:
-            _good, lines = backup.verify()
+            lines = backup.verify()[1]
         except Exception as e:  # noqa: BLE001
-            _good, lines = False, [f"❌ خطأ بالفحص: {html.escape(repr(e))}"]
+            lines = [f"❌ خطأ بالفحص: {html.escape(repr(e))}"]
         env_n = len(env_sessions())
         tip = (f"\n\n🔐 جلسات محفوظة برندر (TG_SESSIONS): <b>{env_n}</b>"
                + ("" if env_n else " — يُفضّل تحطها هناك حتى ما تروح أبداً"))
@@ -1697,7 +1697,8 @@ def startup():
     try:
         status = backup.restore()
         if status == "restored":
-            event("♻️ تم استرجاع البيانات من النسخة الاحتياطية", "ok")
+            event("♻️ تم استرجاع البيانات من النسخة الاحتياطية"
+                  + (" (انقذت نسخة أحدث)" if backup.rescued else ""), "ok")
         elif status == "error":
             restore_failed_notice()
     except Exception as e:  # noqa: BLE001

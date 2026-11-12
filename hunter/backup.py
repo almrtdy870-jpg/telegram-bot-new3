@@ -25,6 +25,7 @@ class TelegramBackup:
         # True while a backup exists but could not be read: writing a new
         # (empty) backup now would destroy the good one
         self.blocked = False
+        self.rescued = False  # newer data was recovered from a non-pinned message
         self._lock = threading.Lock()
 
     # -- restore --------------------------------------------------------
@@ -51,10 +52,39 @@ class TelegramBackup:
         except ValueError:
             self.last_error = "ملف النسخة الاحتياطية تالف"
             return "error"
-        self.message_id = data.get("_backup_msg") or self.message_id
+        # Always keep writing to the PINNED message: that is the one read on
+        # start-up. (Older versions went back to a message id stored inside
+        # the file, so saves and reads could end up on different messages.)
+        data = self._rescue_newer(data, pinned.get("message_id"))
+        data.pop("_backup_msg", None)
         restored = self.store.load_backup(data)
         self.last_backup = time.time()
         return "restored" if restored else "current"
+
+    def _rescue_newer(self, data, pinned_id):
+        """One-time repair for the old bug: if the file points at another
+        message that holds NEWER data, use that data instead."""
+        other = data.get("_backup_msg")
+        if not other or other == pinned_id:
+            return data
+        fwd = self.bot.call("forwardMessage", chat_id=self.chat_id, from_chat_id=self.chat_id,
+                            message_id=other, disable_notification=True)
+        if not fwd:
+            return data
+        try:
+            doc = fwd.get("document") or {}
+            if doc.get("file_name") == FILENAME:
+                raw = self.bot.download_text(doc["file_id"], limit=20_000_000)
+                newer = json.loads(raw or "")
+                if newer.get("saved_at", 0) > data.get("saved_at", 0):
+                    data = newer
+                    self.rescued = True
+        except (ValueError, TypeError):
+            pass
+        finally:
+            if fwd.get("message_id"):
+                self.bot.call("deleteMessage", chat_id=self.chat_id, message_id=fwd["message_id"])
+        return data
 
     def restore(self, attempts=6, wait=10) -> str:
         """Restore with retries. While the result is 'error', backups stay
@@ -114,7 +144,7 @@ class TelegramBackup:
         with self._lock:
             if not force and not self.store.dirty:
                 return True
-            self.store.data["_backup_msg"] = self.message_id
+            self.store.data.pop("_backup_msg", None)
             content = self.store.dump()
             self.store.dirty = False
             ok = False
@@ -122,8 +152,11 @@ class TelegramBackup:
                 ok = self.bot.edit_document(self.chat_id, self.message_id, FILENAME,
                                             content, CAPTION) is not None
             if not ok:  # first backup, or the old message was deleted
+                old = self.message_id
                 msg = self.bot.send_document(self.chat_id, FILENAME, content, CAPTION, silent=True)
                 if msg and msg.get("message_id"):
+                    if old:  # only one backup may stay pinned
+                        self.bot.call("unpinChatMessage", chat_id=self.chat_id, message_id=old)
                     self.message_id = msg["message_id"]
                     self.bot.call("pinChatMessage", chat_id=self.chat_id,
                                   message_id=self.message_id, disable_notification=True)
