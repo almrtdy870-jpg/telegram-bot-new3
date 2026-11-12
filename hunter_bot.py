@@ -681,6 +681,8 @@ def settings_menu():
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
+        [btn(f"♻️ تشغيل الصيد تلقائياً بعد إعادة التشغيل: {'✅' if s.get('auto_resume') else '❌'}",
+             "toggle_resume")],
         [btn("📜 سجل الأخطاء", "errors"), btn("💾 نسخ احتياطي الحين", "backup_now")],
         [btn("❓ شرح القوالب", "help")],
         [btn("🔙 رجوع", "menu")],
@@ -1333,6 +1335,9 @@ def handle_callback(cq):
             nxt = "off"
         store.set("claim_mode", nxt)
         bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
+    elif data == "toggle_resume":
+        store.set("auto_resume", not s.get("auto_resume"))
+        bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
     elif data in ("toggle_variants", "toggle_fragment"):
         key = "word_variants" if data == "toggle_variants" else "notify_fragment"
         store.set(key, not s[key])
@@ -1753,7 +1758,8 @@ def _startup_rest():
             store.data["trend_digit_v2"] = True
             store.save()
     load_sessions()
-    if store.data.get("resume") and store.data.get("resume_chat") and not hunter.running:
+    if (store.settings.get("auto_resume") and store.data.get("resume")
+            and store.data.get("resume_chat") and not hunter.running):
         chat_id = store.data["resume_chat"]
         bot.send(chat_id, "♻️ <b>البوت رجع اشتغل</b> بعد إعادة تشغيل الخادم، والصيد رجع يشتغل وحده.")
         event("♻️ استئناف الصيد تلقائياً", "ok")

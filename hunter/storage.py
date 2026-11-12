@@ -24,6 +24,7 @@ DEFAULT_SETTINGS = {
     "claim_mode": "channel",   # off | channel | account
     "notify_fragment": False,  # also report names listed on Fragment
     "notify": "claimed",       # all | claimed | off  (hunt notifications in chat)
+    "auto_resume": False,      # restart the hunt by itself after a server restart
 }
 
 
