@@ -9,18 +9,23 @@ class BotAPI:
         self.token = token
         self.base = f"https://api.telegram.org/bot{token}"
         self.s = requests.Session()
+        self.last_error = ""  # "<method>: <Telegram's reason>" of the last failed call
+
+    def _fail(self, method, reason):
+        self.last_error = f"{method}: {reason}"[:300].replace(self.token, "***")
+        print(f"[tg] {self.last_error}")
 
     def call(self, method, timeout=30, **params):
         try:
             r = self.s.post(f"{self.base}/{method}", json=params, timeout=timeout)
             data = r.json()
         except (requests.RequestException, ValueError) as e:
-            print(f"[tg] {method} error: {e}")
+            self._fail(method, type(e).__name__)
             return None
         if not data.get("ok"):
             desc = data.get("description", "")
             if "message is not modified" not in desc:
-                print(f"[tg] {method} failed: {desc}")
+                self._fail(method, desc)
             return None
         return data.get("result")
 
@@ -48,9 +53,13 @@ class BotAPI:
                             data={"chat_id": chat_id, "caption": caption,
                                   "disable_notification": "true" if silent else "false"},
                             files={"document": (filename, content)}, timeout=60)
-            return r.json().get("result")
+            data = r.json()
+            if not data.get("ok"):
+                self._fail("sendDocument", data.get("description", "?"))
+                return None
+            return data.get("result")
         except (requests.RequestException, ValueError) as e:
-            print(f"[tg] sendDocument error: {e}")
+            self._fail("sendDocument", type(e).__name__)
             return None
 
     def edit_document(self, chat_id, message_id, filename, content: bytes, caption=""):
@@ -62,9 +71,12 @@ class BotAPI:
                                   "media": json.dumps(media)},
                             files={"file": (filename, content)}, timeout=60)
             data = r.json()
-            return data.get("result") if data.get("ok") else None
+            if not data.get("ok"):
+                self._fail("editMessageMedia", data.get("description", "?"))
+                return None
+            return data.get("result")
         except (requests.RequestException, ValueError) as e:
-            print(f"[tg] editMessageMedia error: {e}")
+            self._fail("editMessageMedia", type(e).__name__)
             return None
 
     def download_text(self, file_id, limit=5_000_000):

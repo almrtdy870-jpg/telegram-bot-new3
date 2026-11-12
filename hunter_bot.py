@@ -1690,8 +1690,11 @@ def backup_loop():
         time.sleep(30)
         try:
             if not backup.blocked and store.dirty and time.time() - backup.last_backup >= backup.interval:
+                before = backup.edits_failed
                 if not backup.backup():
                     error(f"💾 فشل النسخ الاحتياطي: {backup.last_error}")
+                elif backup.edits_failed > before:
+                    error(f"💾 ما گدرت أعدّل ملف النسخة فدزيت ملف جديد. السبب: {backup.edit_error}")
         except Exception as e:  # noqa: BLE001
             error(f"💾 فشل النسخ الاحتياطي: {e}")
 
@@ -1708,6 +1711,8 @@ def startup():
                   + (" (انقذت نسخة أحدث)" if backup.rescued else ""), "ok")
         elif status == "error":
             restore_failed_notice()
+        else:
+            event(f"💾 الاسترجاع: {'ماكو نسخة' if status == 'none' else 'البيانات محدّثة'} - {backup.note}", "info")
     except Exception as e:  # noqa: BLE001
         backup.blocked = True
         backup.last_error = str(e)

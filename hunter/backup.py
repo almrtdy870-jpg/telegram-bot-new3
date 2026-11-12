@@ -26,6 +26,9 @@ class TelegramBackup:
         # (empty) backup now would destroy the good one
         self.blocked = False
         self.rescued = False  # newer data was recovered from a non-pinned message
+        self.note = ""        # what the last restore found
+        self.edit_error = ""  # why replacing the pinned file failed last time
+        self.edits_ok = self.edits_failed = self.new_docs = 0
         self._lock = threading.Lock()
 
     # -- restore --------------------------------------------------------
@@ -41,8 +44,11 @@ class TelegramBackup:
         pinned = chat.get("pinned_message") or {}
         doc = pinned.get("document") or {}
         if doc.get("file_name") != FILENAME:
+            self.note = ("ماكو رسالة مثبّتة" if not pinned else
+                         f"المثبّت مو ملف النسخة ({doc.get('file_name') or 'رسالة عادية'})")
             return "none"
         self.message_id = pinned.get("message_id")
+        self.note = f"لگيت الملف المثبّت (رسالة {self.message_id})"
         raw = self.bot.download_text(doc["file_id"], limit=20_000_000)
         if not raw:
             self.last_error = "ما گدرت أنزّل ملف النسخة الاحتياطية"
@@ -102,7 +108,11 @@ class TelegramBackup:
     def verify(self):
         """Read the pinned backup back from Telegram and compare it with the
         live data. Returns (ok, list_of_report_lines)."""
-        lines = [f"• المحادثة: <code>{self.chat_id}</code>"]
+        lines = [f"• المحادثة: <code>{self.chat_id}</code>",
+                 f"• عند التشغيل: {self.note or '—'}",
+                 f"• تعديل الملف: نجح {self.edits_ok} / فشل {self.edits_failed} • ملفات جديدة: {self.new_docs}"]
+        if self.edit_error:
+            lines.append(f"• سبب فشل التعديل: <code>{self.edit_error}</code>")
         if not self.chat_id:
             return False, lines + ["❌ ماكو محادثة للنسخ (حط ADMIN_IDS برندر)"]
         chat = self.bot.call("getChat", chat_id=self.chat_id)
@@ -151,6 +161,11 @@ class TelegramBackup:
             if self.message_id:
                 ok = self.bot.edit_document(self.chat_id, self.message_id, FILENAME,
                                             content, CAPTION) is not None
+                if ok:
+                    self.edits_ok += 1
+                else:
+                    self.edits_failed += 1
+                    self.edit_error = getattr(self.bot, "last_error", "")
             if not ok:  # first backup, or the old message was deleted
                 old = self.message_id
                 msg = self.bot.send_document(self.chat_id, FILENAME, content, CAPTION, silent=True)
@@ -158,6 +173,7 @@ class TelegramBackup:
                     if old:  # only one backup may stay pinned
                         self.bot.call("unpinChatMessage", chat_id=self.chat_id, message_id=old)
                     self.message_id = msg["message_id"]
+                    self.new_docs += 1
                     self.bot.call("pinChatMessage", chat_id=self.chat_id,
                                   message_id=self.message_id, disable_notification=True)
                     ok = True
@@ -166,7 +182,7 @@ class TelegramBackup:
                 self.last_error = ""
             else:
                 self.store.dirty = True
-                self.last_error = "فشل رفع النسخة الاحتياطية"
+                self.last_error = "فشل رفع النسخة الاحتياطية: " + getattr(self.bot, "last_error", "")
             return ok
 
     def run_forever(self):
