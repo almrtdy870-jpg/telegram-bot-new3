@@ -42,7 +42,9 @@ class Hunter:
         self.reported = set()
         self.verify_q = []   # need an exact account check
         self.claim_q = []    # confirmed free, waiting for claim flood to end
+        self.watch_hits = []  # usernames from the watchlist that just got claimed
         threading.Thread(target=self._queue_worker, daemon=True).start()
+        threading.Thread(target=self._watch_worker, daemon=True).start()
 
     @staticmethod
     def _new_stats():
@@ -126,6 +128,49 @@ class Hunter:
                     self._bump("fragment")
                 else:
                     self._bump("taken")
+
+    # -- watchlist (independent of the hunt) ----------------------------
+    def _watch_worker(self):
+        """Poll watched usernames fast and claim the instant one is free.
+        Runs even when the main hunt is stopped."""
+        i = 0
+        while True:
+            time.sleep(4)
+            watch = list(self.store.settings.get("watch", []))
+            if not watch:
+                continue
+            c = self.get_claimer()
+            if c is None or not c.ready or c.check_flood_left:
+                continue
+            name = watch[i % len(watch)]
+            i += 1
+            try:
+                res = c.check(name)
+            except Exception:  # noqa: BLE001
+                continue
+            if res != checker.AVAILABLE:
+                continue
+            event(f"🎯 اليوزر المراقَب @{name} صار متاح! جاري الحجز...", "ok")
+            mode = self.store.settings.get("claim_mode", "off") or "channel"
+            ok, msg = c.claim(name, mode if mode != "off" else "channel")
+            self._remove_watch(name)
+            if ok:
+                self.store.day_inc("claims")
+                self.store.add_found(name, checker.AVAILABLE, "watch", claimed=True)
+                self.store.update_found(name, account=getattr(c, "last_claim_account", None))
+                event(f"🎯🔒 انحجز اليوزر المراقَب @{name}", "ok")
+            else:
+                self.store.add_found(name, checker.AVAILABLE, "watch")
+                error(f"🎯 @{name} صار متاح بس ما انحجز: {msg}")
+            with self._q_lock:
+                self.watch_hits.append((name, ok, msg))
+
+    def _remove_watch(self, name):
+        with self.store.lock:
+            w = self.store.settings.get("watch", [])
+            if name in w:
+                w.remove(name)
+                self.store.save()
 
     # -- work -----------------------------------------------------------
     def _next(self):
@@ -277,6 +322,9 @@ class Hunter:
         with self._q_lock:
             names, self.maybe_buf = self.maybe_buf, []
             asks, self.ask_buf = self.ask_buf, []
+            hits, self.watch_hits = self.watch_hits, []
+        for name, ok, msg in hits:
+            self.on_found(name, checker.AVAILABLE, "watch", (ok, msg))
         if names and self.on_maybe:
             self.on_maybe(names)
         if asks and self.on_ask:

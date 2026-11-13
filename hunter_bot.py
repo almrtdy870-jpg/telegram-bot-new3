@@ -174,11 +174,20 @@ def post_to_channel(username):
 
 
 def on_found(username, status, source, claim_result):
-    chat_id = hunt_ctx["chat_id"]
+    chat_id = hunt_ctx["chat_id"] or backup.chat_id or store.data.get("resume_chat")
     claimed = bool(claim_result and claim_result[0])
     if claimed:
         post_to_channel(username)
     if not chat_id:
+        return
+    if source == "watch":  # watchlist result: always tell the owner
+        ok = claim_result and claim_result[0]
+        msg = (claim_result[1] if claim_result else "")
+        bot.send(chat_id, (f"🎯🔒 <b>انحجز اليوزر المراقَب!</b>\n\n👤 @{username}\n{html.escape(msg)}"
+                           if ok else
+                           f"🎯 <b>اليوزر المراقَب صار متاح بس ما انحجز</b>\n\n👤 @{username}\n"
+                           f"⚠️ {html.escape(msg)}\n\nجرّب 📌 احجزه بسرعة!"),
+                 {"inline_keyboard": [[btn("📌 احجزه", f"claim:{username}")]]} if not ok else None)
         return
     mode = store.settings.get("notify", "claimed")
     if mode == "off" or (mode == "claimed" and not claimed):
@@ -396,10 +405,36 @@ def modes_menu():
 
 
 def tools_menu():
+    n = len(store.settings.get("watch", []))
     return {"inline_keyboard": [
         [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
+        [btn(f"🎯 مراقبة يوزر ({n})", "watch")],
         [btn("🔙 رجوع", "menu")],
     ]}
+
+
+def watch_text():
+    w = store.settings.get("watch", [])
+    acc = "🟢 مربوط" if pool.ready else "🔴 لا يوجد حساب متصل"
+    text = ("🎯 <b>مراقبة يوزر</b>\n\n"
+            "تدزلي يوزر <b>محجوز</b> تريده، وأبقى أفحصه كل ثواني، وأول ما يتحرر <b>أحجزه فوراً</b> "
+            "قبل غيرك — حتى لو الصيد متوقف.\n\n"
+            f"• الحساب: {acc}\n"
+            f"• المراقَبين الآن ({len(w)}):\n")
+    text += ("\n".join(f"👁 @{u}" for u in w) if w else "— ماكو، دز يوزر حتى أبدي.")
+    if not pool.ready:
+        text += "\n\n⚠️ لازم حساب متصل حتى تشتغل المراقبة."
+    return text
+
+
+def watch_menu():
+    rows = [[btn("➕ أضف يوزر للمراقبة", "watch_add")]]
+    for u in store.settings.get("watch", []):
+        rows.append([btn(f"👁 @{u}", "noop"), btn("❌ وقّف", f"watch_del:{u}")])
+    if store.settings.get("watch"):
+        rows.append([btn("🗑 وقّف الكل", "watch_clear")])
+    rows.append([btn("🔙 الأدوات", "tools")])
+    return {"inline_keyboard": rows}
 
 
 SETTINGS_TEXT = "⚙️ <b>الإعدادات</b>\n\nاختار شنو تريد تغيّر:"
@@ -1533,7 +1568,25 @@ def handle_callback(cq):
     elif data == "tools":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, "🛠 <b>الأدوات</b>\n\n🔍 <b>فحص يوزر</b>: تشوف إذا يوزر متاح\n"
-                               "📌 <b>حجز يوزر</b>: تحجز يوزر بقناة فوراً", tools_menu())
+                               "📌 <b>حجز يوزر</b>: تحجز يوزر بقناة فوراً\n"
+                               "🎯 <b>مراقبة يوزر</b>: يحجزه لحظة ما يتحرر", tools_menu())
+    elif data == "watch":
+        states.pop(chat_id, None)
+        bot.edit(chat_id, mid, watch_text(), watch_menu())
+    elif data == "watch_add":
+        states[chat_id] = "watch"
+        bot.send(chat_id, "🎯 دز اليوزر (أو أكثر، كل واحد بسطر) اللي تريد تراقبه، مثل <code>@jets</code>.", BACK)
+    elif data.startswith("watch_del:"):
+        name = data[10:]
+        with store.lock:
+            w = store.settings.get("watch", [])
+            if name in w:
+                w.remove(name)
+                store.save()
+        bot.edit(chat_id, mid, watch_text(), watch_menu())
+    elif data == "watch_clear":
+        store.set("watch", [])
+        bot.edit(chat_id, mid, watch_text(), watch_menu())
     elif data == "errors":
         bot.edit(chat_id, mid, errors_text(),
                  {"inline_keyboard": [[btn("🗑 مسح السجل", "errors_clear"), btn("🔙 رجوع", "settings")]]})
@@ -1928,6 +1981,24 @@ def handle_message(msg):
         states.pop(chat_id, None)
         names = [normalize(x) for x in text.split()]
         threading.Thread(target=run_claim_list, args=(chat_id, names), daemon=True).start()
+        return
+    if state == "watch":
+        states.pop(chat_id, None)
+        names = [normalize(x) for x in text.split()]
+        good = [n for n in names if is_valid(n, min_len=4)]
+        with store.lock:
+            w = store.settings.get("watch", [])
+            for n in good:
+                if n not in w:
+                    w.append(n)
+            store.data["settings"]["watch"] = w[:50]
+            store.save()
+        out = (f"✅ صرت أراقب: {', '.join('@' + n for n in good[:20])}\n"
+               "أول ما يتحرر أي واحد أحجزه فوراً وأبلغك." if good
+               else "⚠️ ماكو يوزر صالح (4 أحرف على الأقل).")
+        if good and not pool.ready:
+            out += "\n\n⚠️ بس لازم حساب متصل حتى تشتغل المراقبة."
+        bot.send(chat_id, out, watch_menu())
         return
     if state == "check":
         states.pop(chat_id, None)
