@@ -79,6 +79,8 @@ class Claimer:
         self.label = label
         self.full = False  # hit the public-channel limit
         self.frozen = False  # Telegram froze this account
+        self._public = None      # cached [(username, title)] of public channels this account owns
+        self._public_at = 0.0
         self.api_id = int(api_id)
         self.api_hash = api_hash
         self.session_string = session_string
@@ -250,6 +252,63 @@ class Claimer:
             self._holder = res.chats[0]
         return self._holder
 
+    # -- owned public channels -------------------------------------------
+    def public_channels(self, max_age=600):
+        """[(username, title)] of the public channels this account owns
+        (each one uses a slot of Telegram's ~10 public-channel limit)."""
+        if not self.ready:
+            return []
+        if self._public is not None and time.time() - self._public_at < max_age:
+            return self._public
+        try:
+            self._public = self._run(self._list_public(), timeout=40)
+            self._public_at = time.time()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = str(e)
+            return self._public or []
+        return self._public
+
+    async def _list_public(self):
+        res = await self.client(functions.channels.GetAdminedPublicChannelsRequest())
+        return [((c.username or "").lower(), c.title or "") for c in res.chats if getattr(c, "username", None)]
+
+    def holds(self, username):
+        return any(u == username.lower() for u, _t in self.public_channels())
+
+    def release(self, username):
+        """Free a claimed username. Channels the bot created for it are
+        deleted; any other channel only loses its username. Returns (ok, msg)."""
+        if not self.ready:
+            return False, "الحساب غير متصل"
+        with self._claim_lock:
+            try:
+                out = self._run(self._release(username.lower()), timeout=60)
+            except Exception as e:  # noqa: BLE001
+                return False, str(e)
+        self._public = None
+        if out[0]:
+            self.full = False
+        return out
+
+    async def _release(self, username):
+        try:
+            res = await self.client(functions.channels.GetAdminedPublicChannelsRequest())
+            ch = next((c for c in res.chats if (getattr(c, "username", "") or "").lower() == username), None)
+            if ch is None:
+                return False, "ما لگيت قناة بهذا اليوزر على هذا الحساب"
+            if (ch.title or "") in (f"@{username}", "Reserved"):
+                await self.client(functions.channels.DeleteChannelRequest(ch))
+                return True, "انحذفت القناة وتحرر اليوزر"
+            await self.client(functions.channels.UpdateUsernameRequest(ch, ""))
+            return True, "انشال اليوزر من القناة (القناة باقية لأن اسمها متغيّر)"
+        except errors.FloodWaitError as e:
+            self.claim_flood_until = time.time() + e.seconds
+            return False, f"فلود {fmt_wait(e.seconds)}"
+        except errors.RPCError as e:
+            if self._mark_frozen(e):
+                return False, "الحساب مجمّد من تليجرام"
+            return False, f"{type(e).__name__}: {e}"
+
     async def _claim(self, username, mode):
         try:
             if mode == "account":
@@ -258,6 +317,7 @@ class Claimer:
             holder = await self._get_holder()
             await self.client(functions.channels.UpdateUsernameRequest(holder, username))
             self._holder = None  # this channel now owns the username
+            self._public = None
             try:
                 await self.client(functions.channels.EditTitleRequest(holder, f"@{username}"))
             except errors.RPCError:

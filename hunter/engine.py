@@ -5,6 +5,7 @@ via t.me/fragment) are not reported one by one; they go to a verify queue that a
 background thread drains with the account once the flood ends. Confirmed names
 that can't be claimed yet go to a claim queue the same way.
 """
+import re
 import threading
 import time
 
@@ -20,8 +21,10 @@ class Hunter:
     def __init__(self, store, on_found, on_status, claimer_getter, on_maybe=None, on_combo=None):
         self.on_maybe = on_maybe        # (list_of_names) batched unverified results
         self.maybe_buf = []
-        self.on_combo = on_combo        # (list_of_names) free word combinations, not claimed
-        self.combo_buf = []
+        # on_ask([(name, reason)]): free names that were NOT claimed automatically
+        # reason: combo | cap (daily limit) | digit (weak trailing digit)
+        self.on_ask = on_combo
+        self.ask_buf = []
         self.store = store
         # on_found(username, status, source, claim_result)
         self.on_found = on_found
@@ -140,6 +143,7 @@ class Hunter:
             self.stats[key] += 1
             if key == "checked":
                 self.store.data["total_checks"] = self.store.data.get("total_checks", 0) + 1
+                self.store.day_inc("checks")
 
     def _worker(self):
         errors_in_row = 0
@@ -196,20 +200,37 @@ class Hunter:
         if name in self.reported:
             return
         self.reported.add(name)
-        if name in generator.COMBO_NAMES and not self.store.settings.get("combo_claim"):
-            # free word combinations are plentiful: list them, the owner picks
-            event(f"🧩 متاح @{name}", "ok")
-            self.store.add_found(name, checker.AVAILABLE, source)
-            with self._q_lock:
-                self.combo_buf.append(name)
-            return
         mode = self.store.settings.get("claim_mode", "off")
+        can_claim = mode != "off" and claimer is not None and claimer.ready
+        reason = self._ask_reason(name) if can_claim or name in generator.COMBO_NAMES else None
+        if reason:
+            # free, but not worth / not allowed to claim automatically: list it
+            event(f"🟢 متاح (ينتظر قرارك) @{name}", "ok")
+            self.store.add_found(name, checker.AVAILABLE, source)
+            self.store.day_inc("asked")
+            with self._q_lock:
+                self.ask_buf.append((name, reason))
+            return
         if mode != "off" and claimer is not None and claimer.ready:
             self._try_claim(name, source, claimer)
         else:
             event(f"✅ متاح @{name}", "ok")
             self.store.add_found(name, checker.AVAILABLE, source)
             self.on_found(name, checker.AVAILABLE, source, None)
+
+    def _ask_reason(self, name):
+        """Why this free name should be listed instead of claimed (or None)."""
+        s = self.store.settings
+        if name in generator.COMBO_NAMES and not s.get("combo_claim"):
+            return "combo"
+        cap = int(s.get("claim_cap_day", 0) or 0)
+        if cap and self.store.day().get("claims", 0) >= cap:
+            return "cap"
+        strong = str(s.get("auto_digits", "") or "")
+        m = re.search(r"(\d+)$", name)
+        if strong and m and any(ch not in strong for ch in m.group(1)):
+            return "digit"
+        return None
 
     def _try_claim(self, name, source, claimer, notify_wait=True):
         mode = self.store.settings.get("claim_mode", "off")
@@ -233,9 +254,12 @@ class Hunter:
             error(f"ما انحجز @{name}: {msg}")
         if ok:
             self._bump("claimed")
+            self.store.day_inc("claims")
             if mode == "account":  # an account holds a single username
                 self.store.set("claim_mode", "off")
         self.store.add_found(name, checker.AVAILABLE, source, claimed=ok)
+        if ok:
+            self.store.update_found(name, account=getattr(claimer, "last_claim_account", None))
         self.on_found(name, checker.AVAILABLE, source, (ok, msg))
 
     # -- reporting ------------------------------------------------------
@@ -252,11 +276,11 @@ class Hunter:
     def _flush_maybe(self):
         with self._q_lock:
             names, self.maybe_buf = self.maybe_buf, []
-            combos, self.combo_buf = self.combo_buf, []
+            asks, self.ask_buf = self.ask_buf, []
         if names and self.on_maybe:
             self.on_maybe(names)
-        if combos and self.on_combo:
-            self.on_combo(combos)
+        if asks and self.on_ask:
+            self.on_ask(asks)
 
     def summary(self, final=False):
         s = self.stats

@@ -29,6 +29,9 @@ DEFAULT_SETTINGS = {
     "notify_fragment": False,  # also report names listed on Fragment
     "notify": "claimed",       # all | claimed | off  (hunt notifications in chat)
     "auto_resume": False,      # restart the hunt by itself after a server restart
+    "claim_cap_day": 10,       # automatic claims per day (0 = no limit); extra finds are listed
+    "auto_digits": "689",      # auto-claim only names whose trailing digits are all in this set ("" = any)
+    "report_hour": 21,         # local hour of the daily report (-1 = off)
     "notify_channel": "",      # @channel (or -100... id) that gets a post for every claimed username
 }
 
@@ -39,6 +42,7 @@ class Store:
         self.lock = threading.RLock()
         self.data = {"owner": None, "settings": dict(DEFAULT_SETTINGS), "found": []}
         self.dirty = False      # changed since the last Telegram backup
+        self.tz_offset = 3      # hours added to UTC for "today" (set by the bot)
         self.file_saved_at = 0  # saved_at of the data file found at start-up
         if os.path.exists(path):
             try:
@@ -78,6 +82,23 @@ class Store:
             self.save()
             self.dirty = False
             return True
+
+    # -- per-day counters (checks / claims / asked / errors) ------------
+    def today(self) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(time.time() + self.tz_offset * 3600))
+
+    def day(self) -> dict:
+        with self.lock:
+            d = self.data.get("daily")
+            if not isinstance(d, dict) or d.get("date") != self.today():
+                d = {"date": self.today(), "checks": 0, "claims": 0, "asked": 0}
+                self.data["daily"] = d
+            return d
+
+    def day_inc(self, key, n=1):
+        with self.lock:
+            d = self.day()
+            d[key] = d.get(key, 0) + n
 
     def force_load(self, loaded: dict):
         """Replace everything with a backup the owner chose explicitly."""

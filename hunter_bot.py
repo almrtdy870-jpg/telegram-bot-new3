@@ -43,7 +43,7 @@ from hunter.generator import (MAX_REPLACE_POSITIONS, MAX_RULES, masked, parse_ru
                               similar_stream,
                               space_size, validate_template)
 from hunter.rules import is_valid, normalize
-from hunter.sessions import LoginFlow, SessionPool
+from hunter.sessions import LoginFlow, SessionPool, account_name
 from hunter.storage import Store
 from hunter.tg import BotAPI
 
@@ -61,6 +61,7 @@ BOOT = time.time()
 
 bot = BotAPI(TOKEN)
 store = Store(os.environ.get("DATA_FILE", "data/hunter.json"))
+store.tz_offset = TZ_OFFSET
 store.data.setdefault("sessions", [])
 store.data.setdefault("total_checks", 0)
 app = Flask(__name__)
@@ -220,19 +221,22 @@ def on_maybe(names):
                       + "\n\n💡 ضيف جلسة من 🔑 الجلسات حتى ينفحصن صح وينحجزن.")
 
 
-def on_combo(names):
-    """Free word combinations found (not claimed): one batched message."""
+ASK_REASON = {"combo": "اسم مركّب", "cap": "وصل الحد اليومي للحجز", "digit": "رقمه مو من الأرقام القوية"}
+
+
+def on_ask(items):
+    """Free names that were not claimed automatically: one batched message."""
     chat_id = hunt_ctx["chat_id"]
     if not chat_id or store.settings.get("notify", "claimed") == "off":
         return
-    rows = [[btn(f"📌 {n}", f"claim:{n}")] for n in names[:8]]
-    bot.send(chat_id, f"🧩 <b>أسماء مركّبة متاحة ({len(names)})</b>\n\n"
-                      + "\n".join(f"• @{n}" for n in names[:40])
-                      + "\n\nاضغط 📌 على اللي يعجبك حتى أحجزه بقناة. الباقي محفوظ بـ 🏆 النتائج.",
+    rows = [[btn(f"📌 احجز {n}", f"claim:{n}")] for n, _r in items[:8]]
+    bot.send(chat_id, f"🟢 <b>متاحة وما انحجزت ({len(items)})</b>\n\n"
+                      + "\n".join(f"• @{n} — <i>{ASK_REASON.get(r, r)}</i>" for n, r in items[:40])
+                      + "\n\nاضغط 📌 على اللي يعجبك. الباقي محفوظ بـ 🏆 النتائج ← 🟢 المتاحة.",
              {"inline_keyboard": rows})
 
 
-hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe, on_combo)
+hunter = Hunter(store, on_found, on_status, get_claimer, on_maybe, on_ask)
 
 # ---------------------------------------------------------------- texts
 CLAIM_LABELS = {"off": "إيقاف", "channel": "قناة", "account": "حسابي"}
@@ -761,6 +765,10 @@ def settings_menu():
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
+        [btn(f"🧮 حد الحجز اليومي: {s.get('claim_cap_day') or '∞'}", "set_cap"),
+         btn(f"🎯 أرقام الحجز: {s.get('auto_digits') or 'الكل'}", "set_digits")],
+        [btn(f"📊 التقرير اليومي: {'❌' if int(s.get('report_hour', 21)) < 0 else str(s.get('report_hour')) + ':00'}",
+             "set_report")],
         [btn(f"📢 قناة الإشعارات: {s.get('notify_channel') or '—'}", "set_channel")],
         [btn(f"♻️ تشغيل الصيد تلقائياً بعد إعادة التشغيل: {'✅' if s.get('auto_resume') else '❌'}",
              "toggle_resume")],
@@ -782,13 +790,6 @@ def presets_menu():
         rows.append(row)
     rows.append([btn("🔙 رجوع", "modes")])
     return {"inline_keyboard": rows}
-
-
-def results_menu():
-    return {"inline_keyboard": [
-        [btn("📤 تصدير", "export"), btn("🗑 مسح النتائج", "clear_found")],
-        [btn("🔙 رجوع", "menu")],
-    ]}
 
 
 def sessions_menu():
@@ -946,17 +947,224 @@ def export_found(chat_id):
     bot.send_document(chat_id, "found_usernames.txt", body.encode(), f"🏆 {len(found)} يوزر")
 
 
+RATE = {"s": ("🔥", "قوي"), "m": ("🙂", "متوسط"), "w": ("😕", "ضعيف")}
+PER_PAGE = 8
+
+
+def claimed_items():
+    """Latest record of every username that is currently claimed."""
+    seen = {}
+    for f in store.data["found"]:
+        seen[f["username"]] = f
+    return [f for f in seen.values() if f.get("claimed") and not f.get("released")]
+
+
+def avail_items():
+    """Free names that were found but not claimed."""
+    seen = {}
+    for f in store.data["found"]:
+        seen[f["username"]] = f
+    return [f for f in seen.values()
+            if f.get("status") == checker.AVAILABLE and not f.get("claimed") and not f.get("released")]
+
+
+def find_item(name):
+    for f in reversed(store.data["found"]):
+        if f["username"] == name:
+            return f
+    return None
+
+
+def rate_icon(f):
+    return RATE.get(f.get("rating"), ("▫️", ""))[0]
+
+
 def found_text():
-    found = store.data["found"][-40:]
-    if not found:
-        return "📭 ماكو نتائج بعد."
-    def icon(f):
-        if f.get("claimed"):
-            return "🔒"
-        return {"fragment": "💎", "unverified": "🟡"}.get(f["status"], "✅")
-    lines = [f"{icon(f)} @{f['username']}" for f in reversed(found)]
-    return (f"🏆 <b>النتائج ({len(store.data['found'])})</b>\n🔒 محجوز • ✅ متاح مؤكد • 🟡 غير مؤكد\n\n"
-            + "\n".join(lines))
+    cl, av = claimed_items(), avail_items()
+    cnt = {k: sum(1 for f in cl if f.get("rating") == k) for k in RATE}
+    d = store.day()
+    cap = int(store.settings.get("claim_cap_day", 0) or 0)
+    return ("🏆 <b>النتائج</b>\n\n"
+            f"🔒 المحجوزة: <b>{len(cl)}</b>\n"
+            f"   🔥 قوي {cnt['s']} • 🙂 متوسط {cnt['m']} • 😕 ضعيف {cnt['w']} • ▫️ بدون تقييم {len(cl) - sum(cnt.values())}\n"
+            f"🟢 متاحة وما انحجزت: <b>{len(av)}</b>\n\n"
+            f"📅 اليوم: حجز {d.get('claims', 0)}" + (f"/{cap}" if cap else "") +
+            f" • بانتظار قرارك {d.get('asked', 0)} • فحص {d.get('checks', 0):,}")
+
+
+def results_menu():
+    return {"inline_keyboard": [
+        [btn("🔒 المحجوزة (تقييم/تفريغ)", "res_c:0"), btn("🟢 المتاحة", "res_a:0")],
+        [btn("📣 منشور بيع", "sale"), btn("🧹 تفريغ الضعيف", "weak")],
+        [btn("📦 القنوات والحسابات", "chans")],
+        [btn("📤 تصدير", "export"), btn("🗑 مسح النتائج", "clear_found")],
+        [btn("🔙 رجوع", "menu")],
+    ]}
+
+
+def _pager(prefix, page, pages):
+    return [btn("◀️", f"{prefix}:{page - 1}") if page > 0 else btn(" ", "noop"),
+            btn(f"{page + 1}/{pages}", "noop"),
+            btn("▶️", f"{prefix}:{page + 1}") if page < pages - 1 else btn(" ", "noop")]
+
+
+def claimed_menu(page=0):
+    order = {"s": 0, "m": 1, None: 2, "w": 3}
+    items = sorted(claimed_items(), key=lambda f: (order.get(f.get("rating"), 2), -f.get("time", 0)))
+    pages = max(1, (len(items) + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows = [[btn(f"{rate_icon(f)} @{f['username']}", f"res:{f['username']}")]
+            for f in items[page * PER_PAGE:(page + 1) * PER_PAGE]]
+    if pages > 1:
+        rows.append(_pager("res_c", page, pages))
+    rows.append([btn("🔙 النتائج", "found")])
+    return {"inline_keyboard": rows}
+
+
+def avail_menu(page=0):
+    items = sorted(avail_items(), key=lambda f: -f.get("time", 0))
+    pages = max(1, (len(items) + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, pages - 1))
+    rows = [[btn(f"📌 احجز @{f['username']}", f"claim:{f['username']}")]
+            for f in items[page * PER_PAGE:(page + 1) * PER_PAGE]]
+    if pages > 1:
+        rows.append(_pager("res_a", page, pages))
+    rows.append([btn("🔙 النتائج", "found")])
+    return {"inline_keyboard": rows}
+
+
+def item_text(name):
+    f = find_item(name) or {}
+    r = RATE.get(f.get("rating"))
+    acc = next((account_name(c) for c in pool.sessions if c.me and c.me.id == f.get("account")), "—")
+    when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(f.get("time", 0) + TZ_OFFSET * 3600)) if f.get("time") else "—"
+    return (f"👤 <b>@{name}</b>\n\n"
+            f"• التقييم: {r[0] + ' ' + r[1] if r else '▫️ بدون تقييم'}\n"
+            f"• الحساب: {acc}\n• تاريخ الصيد: {when}\n• https://t.me/{name}")
+
+
+def item_menu(name):
+    return {"inline_keyboard": [
+        [btn(f"{ic} {lb}", f"rate:{name}:{k}") for k, (ic, lb) in RATE.items()],
+        [btn("🧹 فرّغ قناته", f"rel:{name}"), btn("↗️ انقله لحساب ثاني", f"mv:{name}")],
+        [btn("🔙 المحجوزة", "res_c:0")],
+    ]}
+
+
+def set_item(name, **kw):
+    with store.lock:
+        for f in store.data["found"]:
+            if f["username"] == name:
+                f.update(kw)
+        store.save()
+
+
+def do_release(chat_id, names):
+    """Free claimed usernames (runs in a thread)."""
+    done, failed = [], []
+    for n in names:
+        ok, msg = pool.release(n)
+        if ok:
+            set_item(n, claimed=False, released=True)
+            event(f"🧹 تفرّغت قناة @{n}", "warn")
+            done.append(n)
+        else:
+            failed.append(f"@{n}: {msg}")
+    text = f"🧹 <b>تم تفريغ {len(done)}</b>" + (": " + " ".join("@" + n for n in done[:20]) if done else "")
+    if failed:
+        text += "\n\n⚠️ ما تفرّغن:\n" + "\n".join(html.escape(x) for x in failed[:10])
+    bot.send(chat_id, text, results_menu())
+
+
+def do_move(chat_id, name, idx):
+    target = pool.sessions[idx] if 0 <= idx < len(pool.sessions) else None
+    if target is None:
+        bot.send(chat_id, "⚠️ الحساب غير موجود.", results_menu())
+        return
+    ok, msg = pool.move(name, target)
+    if ok:
+        set_item(name, account=target.me.id if target.me else None)
+        event(f"↗️ انتقل @{name}", "ok")
+    bot.send(chat_id, ("✅ " if ok else "⚠️ ") + html.escape(msg), item_menu(name))
+
+
+def sale_text():
+    cl = claimed_items()
+    strong = [f["username"] for f in cl if f.get("rating") == "s"]
+    mid = [f["username"] for f in cl if f.get("rating") == "m"]
+    if not strong and not mid:
+        return ""
+    text = "🔥 <b>يوزرات للبيع</b>\n"
+    if strong:
+        text += "\n💎 <b>مميزة</b>\n" + "\n".join(f"• @{n}" for n in strong)
+    if mid:
+        text += "\n\n✨ <b>حلوة</b>\n" + "\n".join(f"• @{n}" for n in mid)
+    contact = store.settings.get("sale_contact")
+    if contact:
+        text += f"\n\n📩 للطلب: {html.escape(contact)}"
+    return text
+
+
+def chans_text(fresh=False):
+    usage = pool.usage(0 if fresh else 600)
+    if not usage:
+        return "📦 <b>القنوات والحسابات</b>\n\nماكو حساب متصل."
+    text = "📦 <b>القنوات والحسابات</b>\nكل حساب يتحمل تقريباً 10 قنوات عامة.\n"
+    for c, chans in usage:
+        n = len(chans)
+        icon = "🥶" if c.frozen else "🈵" if (c.full or n >= 10) else "🟠" if n >= 8 else "🟢"
+        flood = f" • 🧊 حجز {fmt_wait(c.claim_flood_left)}" if c.claim_flood_left else ""
+        text += f"\n{icon} <b>{account_name(c)}</b>: {n}/10{flood}\n"
+        if chans:
+            text += "   " + " ".join("@" + u for u, _t in chans[:15]) + (" ..." if n > 15 else "") + "\n"
+    return text
+
+
+def daily_report():
+    d = store.day()
+    cl, av = claimed_items(), avail_items()
+    cap = int(store.settings.get("claim_cap_day", 0) or 0)
+    text = (f"📊 <b>التقرير اليومي</b> — {d['date']}\n\n"
+            f"🔎 الفحوصات: <b>{d.get('checks', 0):,}</b>\n"
+            f"🔒 الحجز اليوم: <b>{d.get('claims', 0)}</b>" + (f" / {cap}" if cap else "") + "\n"
+            f"🟢 متاحة تنتظر قرارك اليوم: <b>{d.get('asked', 0)}</b>\n"
+            f"🏆 مجموع المحجوز: {len(cl)} • المتاح بدون حجز: {len(av)}\n"
+            f"🎯 الصيد: {'🟢 شغّال' if hunter.running else '⚪ متوقف'} — {html.escape(target_label(store.settings))}\n"
+            f"⚠️ أخطاء مسجلة: {errors.count}\n")
+    try:
+        text += "\n" + chans_text().split("\n", 2)[2]
+    except Exception:  # noqa: BLE001
+        pass
+    bad = [account_name(c) for c in pool.sessions if not c.ready]
+    if bad:
+        text += "\n🔴 حسابات مو متصلة: " + "، ".join(bad)
+    return text
+
+
+def report_loop():
+    """Send the daily report once a day at the configured local hour."""
+    _restored.wait(120)
+    while True:
+        time.sleep(240)
+        try:
+            hour = int(store.settings.get("report_hour", 21))
+            if hour < 0:
+                continue
+            now = time.gmtime(time.time() + TZ_OFFSET * 3600)
+            if now.tm_hour >= hour and store.data.get("report_date") != store.today():
+                chat_id = backup.chat_id or store.data.get("resume_chat")
+                if chat_id:
+                    bot.send(chat_id, daily_report(), main_menu())
+                with store.lock:
+                    store.data["report_date"] = store.today()
+                    store.save()
+                # heads-up when an account is nearly out of public channels
+                for c, chans in pool.usage():
+                    if len(chans) >= 8 and chat_id:
+                        bot.send(chat_id, f"🟠 الحساب <b>{account_name(c)}</b> بيه {len(chans)}/10 قنوات. "
+                                          "فرّغ الضعيف من 🏆 النتائج، أو ضيف حساب جديد.")
+        except Exception as e:  # noqa: BLE001
+            error(f"📊 التقرير اليومي: {e!r}"[:200])
 
 
 def errors_text():
@@ -1067,6 +1275,18 @@ PROMPTS = {
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-5 حتى ما يصير فلود."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 1)"),
+    "set_cap": ("cap", "🧮 <b>حد الحجز اليومي</b>\n\nكم يوزر يحجز البوت <b>تلقائياً</b> باليوم؟\n"
+                       "بعد الحد، اليوزرات المتاحة تجيك بقائمة وأنت تختار.\n"
+                       "هذا يحمي حساباتك من الفلود والتجميد.\n\nدز رقم (مثل <code>10</code>)، أو <code>0</code> لبلا حد."),
+    "set_digits": ("digits", "🎯 <b>أرقام الحجز التلقائي</b>\n\n"
+                             "اليوزر اللي ينتهي برقم من هاي الأرقام <b>ينحجز وحده</b>، "
+                             "وغيره يجيك بقائمة وتختار.\n(اليوزر اللي ما ينتهي برقم ينحجز عادي.)\n\n"
+                             "دز الأرقام القوية، مثل <code>689</code> أو <code>1235689</code>.\n"
+                             "دز <code>-</code> حتى يحجز كل الأرقام."),
+    "set_report": ("report", "📊 <b>التقرير اليومي</b>\n\nدز الساعة اللي تريده يجيك بيها (0 إلى 23)، "
+                             "مثل <code>21</code>.\nدز <code>-</code> لإيقافه."),
+    "set_contact": ("contact", "✏️ دز جهة التواصل اللي تطلع بمنشور البيع، مثل <code>@cwvoo</code>.\n"
+                               "دز <code>-</code> لحذفها."),
     "set_channel": ("channel", "📢 <b>قناة الإشعارات</b>\n\n"
                                "كل يوزر <b>ينحجز</b> ينشره البوت بالقناة.\n\n"
                                "1️⃣ ضيف البوت <b>مشرف</b> بالقناة ويّا صلاحية النشر.\n"
@@ -1139,6 +1359,28 @@ def handle_input(key, text):
             return "⚠️ أرسل رقم بين 0 و 120."
         store.set("delay", v)
         return f"✅ التأخير: {v} ثانية"
+    if key == "cap":
+        if not text.isdigit():
+            return "⚠️ دز رقم صحيح، أو 0 لبلا حد."
+        store.set("claim_cap_day", int(text))
+        return f"✅ حد الحجز اليومي: {int(text) or '∞'}"
+    if key == "digits":
+        val = "" if text.strip() == "-" else "".join(sorted({str(int(c)) for c in text if c.isdigit()}))
+        if text.strip() != "-" and not val:
+            return "⚠️ دز أرقام مثل 689، أو - لكل الأرقام."
+        store.set("auto_digits", val)
+        return f"✅ الحجز التلقائي للأرقام: {val or 'الكل'}"
+    if key == "report":
+        if text.strip() == "-":
+            store.set("report_hour", -1)
+            return "✅ التقرير اليومي توقف."
+        if not text.isdigit() or not 0 <= int(text) <= 23:
+            return "⚠️ دز ساعة من 0 إلى 23، أو - للإيقاف."
+        store.set("report_hour", int(text))
+        return f"✅ التقرير اليومي يجيك الساعة {int(text)}:00"
+    if key == "contact":
+        store.set("sale_contact", "" if text.strip() == "-" else text.strip()[:60])
+        return "✅ انحفظت جهة التواصل."
     if key == "channel":
         if text.strip() == "-":
             store.set("notify_channel", "")
@@ -1471,6 +1713,73 @@ def handle_callback(cq):
         bot.edit(chat_id, mid, SETTINGS_TEXT, settings_menu())
     elif data == "found":
         bot.edit(chat_id, mid, found_text(), results_menu())
+    elif data.startswith("res_c:"):
+        bot.edit(chat_id, mid, "🔒 <b>المحجوزة</b>\nاضغط على يوزر حتى تقيّمه أو تفرّغه أو تنقله.\n"
+                               "🔥 قوي • 🙂 متوسط • 😕 ضعيف • ▫️ بدون تقييم", claimed_menu(int(data[6:])))
+    elif data.startswith("res_a:"):
+        bot.edit(chat_id, mid, "🟢 <b>متاحة وما انحجزت</b>\nاضغط 📌 حتى أحجز اليوزر بقناة.\n"
+                               "⚠️ ممكن واحد منهن انحجز من غيرك بهالأثناء.", avail_menu(int(data[6:])))
+    elif data.startswith("res:"):
+        bot.edit(chat_id, mid, item_text(data[4:]), item_menu(data[4:]))
+    elif data.startswith("rate:"):
+        _x, name, k = data.split(":")
+        if k in RATE:
+            set_item(name, rating=k)
+        bot.edit(chat_id, mid, item_text(name), item_menu(name))
+    elif data.startswith("rel:"):
+        name = data[4:]
+        bot.edit(chat_id, mid, f"❓ متأكد تفرّغ قناة <b>@{name}</b>؟\nاليوزر يتحرر وأي واحد يگدر ياخذه.",
+                 {"inline_keyboard": [[btn("✅ نعم فرّغ", f"rel_ok:{name}"), btn("❌ لا", f"res:{name}")]]})
+    elif data.startswith("rel_ok:"):
+        bot.edit(chat_id, mid, "⏳ جاري التفريغ...", None)
+        threading.Thread(target=do_release, args=(chat_id, [data[7:]]), daemon=True).start()
+    elif data.startswith("mv:"):
+        name = data[3:]
+        rows = [[btn(f"↗️ {account_name(c)}", f"mvto:{name}:{i}")]
+                for i, c in enumerate(pool.sessions) if c.ready and not c.full]
+        rows.append([btn("🔙 رجوع", f"res:{name}")])
+        bot.edit(chat_id, mid, f"↗️ لأي حساب تنقل <b>@{name}</b>؟\n\n"
+                               "⚠️ النقل يحرر اليوزر لثواني حتى الحساب الثاني يحجزه. "
+                               "إذا واحد سبقه بهاللحظة يروح اليوزر، فاستخدمه بس عند الحاجة.",
+                 {"inline_keyboard": rows})
+    elif data.startswith("mvto:"):
+        _x, name, i = data.split(":")
+        bot.edit(chat_id, mid, "⏳ جاري النقل...", None)
+        threading.Thread(target=do_move, args=(chat_id, name, int(i)), daemon=True).start()
+    elif data == "sale":
+        text = sale_text()
+        if not text:
+            bot.edit(chat_id, mid, "📣 ماكو يوزرات مقيّمة 🔥 أو 🙂 بعد.\n"
+                                   "روح 🔒 المحجوزة وقيّم يوزراتك، وبعدها ارجع هنا.", results_menu())
+            return
+        rows = [[btn("✏️ جهة التواصل", "set_contact")]]
+        if store.settings.get("notify_channel"):
+            rows[0].append(btn("📢 انشره بقناتي", "sale_post"))
+        rows.append([btn("🔙 النتائج", "found")])
+        bot.send(chat_id, text, {"inline_keyboard": rows})
+    elif data == "sale_post":
+        ok = bot.send(store.settings.get("notify_channel"), sale_text()) is not None
+        bot.send(chat_id, "✅ انتشر المنشور بقناتك." if ok else f"⚠️ ما انتشر: {html.escape(bot.last_error)}",
+                 results_menu())
+    elif data == "weak":
+        weak = [f["username"] for f in claimed_items() if f.get("rating") == "w"]
+        if not weak:
+            bot.edit(chat_id, mid, "🧹 ماكو يوزرات مقيّمة 😕 ضعيف.\nقيّم من 🔒 المحجوزة أول.", results_menu())
+            return
+        bot.edit(chat_id, mid, f"❓ أفرّغ قنوات <b>{len(weak)}</b> يوزر ضعيف؟\n\n"
+                               + " ".join("@" + n for n in weak[:30])
+                               + "\n\nيتحررن وتنحذف قنواتهن، وما يرجعن.",
+                 {"inline_keyboard": [[btn("✅ نعم فرّغهن", "weak_ok"), btn("❌ لا", "found")]]})
+    elif data == "weak_ok":
+        weak = [f["username"] for f in claimed_items() if f.get("rating") == "w"]
+        bot.edit(chat_id, mid, f"⏳ جاري تفريغ {len(weak)} قناة...", None)
+        threading.Thread(target=do_release, args=(chat_id, weak), daemon=True).start()
+    elif data in ("chans", "chans_fresh"):
+        def _show(fresh=data == "chans_fresh"):
+            bot.send(chat_id, chans_text(fresh),
+                     {"inline_keyboard": [[btn("🔄 تحديث", "chans_fresh"), btn("🔙 النتائج", "found")]]})
+        bot.answer(cq["id"])
+        threading.Thread(target=_show, daemon=True).start()
     elif data == "export":
         export_found(chat_id)
     elif data == "clear_found":
@@ -1925,6 +2234,7 @@ event("تم تشغيل البوت", "ok")
 threading.Thread(target=startup, daemon=True).start()
 threading.Thread(target=backup_loop, daemon=True).start()
 threading.Thread(target=trend_loop, daemon=True).start()
+threading.Thread(target=report_loop, daemon=True).start()
 
 # under gunicorn (webhook mode) register the webhook on import
 if WEBHOOK_URL:

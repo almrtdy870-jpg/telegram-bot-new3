@@ -27,6 +27,7 @@ class SessionPool:
         # names an account already confirmed as not free -> {name: time}
         # (endless rounds would otherwise burn the daily check quota on them)
         self.verdicts = {}
+        self.last_claim_account = None  # id of the account that made the last successful claim
 
     # -- membership -----------------------------------------------------
     def add(self, claimer: Claimer):
@@ -132,6 +133,8 @@ class SessionPool:
             ok, msg = c.claim(username, mode)
             if ok:
                 label = f"@{c.me.username}" if c.me and c.me.username else c.label
+                self.last_claim_account = c.me.id if c.me else None
+                self.verdicts.pop(username, None)
                 return True, f"{msg} ({label})"
             if msg.startswith("FLOOD:") or c.full:
                 continue  # try the next account
@@ -139,6 +142,62 @@ class SessionPool:
         if any(not c.full for c in self.active):
             return False, f"FLOOD:{max(1, self.claim_flood_left)}"
         return False, "كل الجلسات وصلت حد القنوات العامة"
+
+
+def account_name(c):
+    if c.me is None:
+        return c.label
+    return f"@{c.me.username}" if c.me.username else str(c.me.id)
+
+
+def _pool_holder(self, username):
+    """The connected account whose public channel carries this username."""
+    for c in self.active:
+        if c.holds(username):
+            return c
+    return None
+
+
+def _pool_release(self, username):
+    c = self.holder(username)
+    if c is None:
+        return False, "ما لگيت اليوزر على أي حساب متصل"
+    ok, msg = c.release(username)
+    if ok:
+        self.verdicts.pop(username.lower(), None)
+    return ok, f"{msg} ({account_name(c)})"
+
+
+def _pool_move(self, username, target):
+    """Move a claimed username to another account: release, then claim there.
+    If the new claim fails the original account takes it back."""
+    src = self.holder(username)
+    if src is None:
+        return False, "ما لگيت اليوزر على أي حساب متصل"
+    if src is target:
+        return False, "اليوزر أصلاً على هذا الحساب"
+    if target.full or target.claim_flood_left or not target.ready:
+        return False, "الحساب الهدف مو جاهز (فلود / ممتلئ / غير متصل)"
+    ok, msg = src.release(username)
+    if not ok:
+        return False, msg
+    ok, msg = target.claim(username, "channel")
+    if ok:
+        return True, f"انتقل من {account_name(src)} إلى {account_name(target)}"
+    back, back_msg = src.claim(username, "channel")
+    return False, (f"فشل النقل ({msg})، " + ("ورجع اليوزر لحسابه الأصلي." if back
+                                              else f"وما گدرت أرجعه: {back_msg}. احجزه يدوياً هسه!"))
+
+
+def _pool_usage(self, max_age=600):
+    """[(claimer, [(username, title)])] for every connected account."""
+    return [(c, c.public_channels(max_age)) for c in self.active]
+
+
+SessionPool.holder = _pool_holder
+SessionPool.release = _pool_release
+SessionPool.move = _pool_move
+SessionPool.usage = _pool_usage
 
 
 class LoginFlow:
