@@ -19,27 +19,22 @@ from .rules import normalize
 PAGES = {
     "sold": "https://fragment.com/?sort=price_desc&filter=sold",
     "auction": "https://fragment.com/?sort=price_desc&filter=auction",
-    "sale": "https://fragment.com/?sort=price_desc&filter=sale",
 }
-KIND_LABEL = {"sold": "انباع", "auction": "مزايدة شغّالة", "sale": "معروض للبيع"}
+KIND_LABEL = {"sold": "انباع", "auction": "مزايدة"}
 
 _ROW = re.compile(r"<tr\b.*?</tr>", re.S | re.I)
 _NAME = re.compile(r'href="/username/([a-z0-9_]{3,32})"', re.I)
 _PRICE = re.compile(r'icon-ton[^>]*>\s*([\d][\d,\.\s]*)', re.I)
 
 # never hunt around brands (Telegram can take them back) or shady topics
-BLOCKED = set("""
-telegram durov fragment toncoin apple iphone google gmail android nike adidas puma gucci dior armani
-prada chanel hermes rolex cartier versace zara ikea facebook instagram whatsapp messenger meta tiktok
-youtube twitter netflix spotify amazon microsoft windows xbox playstation sony samsung huawei xiaomi
-nokia tesla spacex bmw mercedes audi toyota honda ferrari porsche lamborghini binance coinbase okx
-bybit kucoin huobi bitget tether paypal visa mastercard stripe openai chatgpt claude anthropic
-nvidia intel oracle ibm adobe disney marvel pepsi cocacola mcdonalds starbucks uber airbnb booking
-alibaba aliexpress tencent wechat baidu jpmorgan goldman citibank hsbc sber polymarket fifa uefa nba
-nfl potus whitehouse fbi cia nasa interpol
-casino bet bets betting poker slots gambling porn sex xxx escort drugs weed cocaine hack hacker
-carding bocai paofen chengdui dubo
-""".split())
+# never hunt around brands (Telegram can take them back) or shady topics
+BLOCKED = {
+    "telegram", "durov", "fragment", "apple", "google", "nike", "adidas", "gucci", "facebook",
+    "instagram", "whatsapp", "tiktok", "youtube", "twitter", "netflix", "amazon", "microsoft",
+    "samsung", "tesla", "binance", "paypal", "visa", "mastercard", "openai", "chatgpt", "meta",
+    "casino", "bet", "bets", "poker", "slots", "porn", "sex", "xxx", "drugs", "weed", "hack",
+    "carding", "bocai", "paofen", "chengdui", "dubo",
+}
 
 
 def _price(text):
