@@ -279,6 +279,8 @@ def set_source(key, on=True):
         store.data["settings"]["sources"] = srcs
         store.data["settings"]["sources_rev"] = store.settings.get("sources_rev", 0) + 1
         store.save()
+    if not on:
+        hunter.clear_pending()  # names of the removed method must not be claimed later
     return True
 
 
@@ -452,6 +454,7 @@ def set_rules(rules):
         store.data["settings"]["replace_rules"] = rules
         store.data["settings"]["replace_rev"] = store.settings.get("replace_rev", 0) + 1
         store.save()
+    hunter.clear_pending()  # a deleted formula's queued names must not be claimed later
 
 
 def replace_live():

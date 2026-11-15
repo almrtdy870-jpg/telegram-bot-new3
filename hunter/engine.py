@@ -70,6 +70,14 @@ class Hunter:
 
     def stop(self):
         self.running = False
+        self.clear_pending()
+
+    def clear_pending(self):
+        """Drop unverified names (e.g. after a formula / method is removed or the
+        hunt is stopped) so old formulas don't keep getting claimed."""
+        with self._q_lock:
+            self.verify_q.clear()
+            self.maybe_buf.clear()
 
     def _joiner(self):
         for t in self._threads:
