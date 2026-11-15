@@ -5,7 +5,6 @@ via t.me/fragment) are not reported one by one; they go to a verify queue that a
 background thread drains with the account once the flood ends. Confirmed names
 that can't be claimed yet go to a claim queue the same way.
 """
-import re
 import threading
 import time
 
@@ -318,17 +317,11 @@ class Hunter:
             self.on_found(name, checker.AVAILABLE, source, None)
 
     def _ask_reason(self, name):
-        """Why this free name should be listed instead of claimed (or None)."""
-        s = self.store.settings
-        if name in generator.COMBO_NAMES and not s.get("combo_claim"):
+        """Why this free name should be listed instead of claimed (or None).
+        Only word combinations (when their auto-claim is off) are held back;
+        every other free name is claimed right away."""
+        if name in generator.COMBO_NAMES and not self.store.settings.get("combo_claim"):
             return "combo"
-        cap = int(s.get("claim_cap_day", 0) or 0)
-        if cap and self.store.day().get("claims", 0) >= cap:
-            return "cap"
-        strong = str(s.get("auto_digits", "") or "")
-        m = re.search(r"(\d+)$", name)
-        if strong and m and any(ch not in strong for ch in m.group(1)):
-            return "digit"
         return None
 
     def _try_claim(self, name, source, claimer, notify_wait=True):

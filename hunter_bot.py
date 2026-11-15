@@ -233,7 +233,7 @@ def on_maybe(names):
                       + "\n\n💡 ضيف جلسة من 🔑 الجلسات حتى ينفحصن صح وينحجزن.")
 
 
-ASK_REASON = {"combo": "اسم مركّب", "cap": "وصل الحد اليومي للحجز", "digit": "رقمه مو من الأرقام القوية"}
+ASK_REASON = {"combo": "اسم مركّب"}
 
 
 def on_ask(items):
@@ -806,8 +806,6 @@ def settings_menu():
         [btn(f"🔁 تنويعات: {'✅' if s['word_variants'] else '❌'}", "toggle_variants"),
          btn(f"💎 فراجمنت: {'✅' if s['notify_fragment'] else '❌'}", "toggle_fragment")],
         [btn(f"🔔 الإشعارات: {NOTIFY_LABELS[s.get('notify', 'claimed')]}", "cycle_notify")],
-        [btn(f"🧮 حد الحجز اليومي: {s.get('claim_cap_day') or '∞'}", "set_cap"),
-         btn(f"🎯 أرقام الحجز: {s.get('auto_digits') or 'الكل'}", "set_digits")],
         [btn(f"📊 التقرير اليومي: {'❌' if int(s.get('report_hour', 21)) < 0 else str(s.get('report_hour')) + ':00'}",
              "set_report")],
         [btn(f"📢 قناة الإشعارات: {s.get('notify_channel') or '—'}", "set_channel")],
@@ -1026,12 +1024,11 @@ def found_text():
     cl, av = claimed_items(), avail_items()
     cnt = {k: sum(1 for f in cl if f.get("rating") == k) for k in RATE}
     d = store.day()
-    cap = int(store.settings.get("claim_cap_day", 0) or 0)
     return ("🏆 <b>النتائج</b>\n\n"
             f"🔒 المحجوزة: <b>{len(cl)}</b>\n"
             f"   🔥 قوي {cnt['s']} • 🙂 متوسط {cnt['m']} • 😕 ضعيف {cnt['w']} • ▫️ بدون تقييم {len(cl) - sum(cnt.values())}\n"
             f"🟢 متاحة وما انحجزت: <b>{len(av)}</b>\n\n"
-            f"📅 اليوم: حجز {d.get('claims', 0)}" + (f"/{cap}" if cap else "") +
+            f"📅 اليوم: حجز {d.get('claims', 0)}" +
             f" • بانتظار قرارك {d.get('asked', 0)} • فحص {d.get('checks', 0):,}")
 
 
@@ -1166,10 +1163,9 @@ def chans_text(fresh=False):
 def daily_report():
     d = store.day()
     cl, av = claimed_items(), avail_items()
-    cap = int(store.settings.get("claim_cap_day", 0) or 0)
     text = (f"📊 <b>التقرير اليومي</b> — {d['date']}\n\n"
             f"🔎 الفحوصات: <b>{d.get('checks', 0):,}</b>\n"
-            f"🔒 الحجز اليوم: <b>{d.get('claims', 0)}</b>" + (f" / {cap}" if cap else "") + "\n"
+            f"🔒 الحجز اليوم: <b>{d.get('claims', 0)}</b>\n"
             f"🟢 متاحة تنتظر قرارك اليوم: <b>{d.get('asked', 0)}</b>\n"
             f"🏆 مجموع المحجوز: {len(cl)} • المتاح بدون حجز: {len(av)}\n"
             f"🎯 الصيد: {'🟢 شغّال' if hunter.running else '⚪ متوقف'} — {html.escape(target_label(store.settings))}\n"
@@ -1318,14 +1314,6 @@ PROMPTS = {
     "set_suffix": ("suffix", "➕ أرسل اللاحقة، أو <code>-</code> للحذف"),
     "set_threads": ("threads", "⚡ أرسل عدد الخيوط (1 - 50).\nنصيحة: 3-5 حتى ما يصير فلود."),
     "set_delay": ("delay", "⏱ أرسل التأخير بالثواني لكل خيط (مثال 1)"),
-    "set_cap": ("cap", "🧮 <b>حد الحجز اليومي</b>\n\nكم يوزر يحجز البوت <b>تلقائياً</b> باليوم؟\n"
-                       "بعد الحد، اليوزرات المتاحة تجيك بقائمة وأنت تختار.\n"
-                       "هذا يحمي حساباتك من الفلود والتجميد.\n\nدز رقم (مثل <code>10</code>)، أو <code>0</code> لبلا حد."),
-    "set_digits": ("digits", "🎯 <b>أرقام الحجز التلقائي</b>\n\n"
-                             "اليوزر اللي ينتهي برقم من هاي الأرقام <b>ينحجز وحده</b>، "
-                             "وغيره يجيك بقائمة وتختار.\n(اليوزر اللي ما ينتهي برقم ينحجز عادي.)\n\n"
-                             "دز الأرقام القوية، مثل <code>689</code> أو <code>1235689</code>.\n"
-                             "دز <code>-</code> حتى يحجز كل الأرقام."),
     "set_report": ("report", "📊 <b>التقرير اليومي</b>\n\nدز الساعة اللي تريده يجيك بيها (0 إلى 23)، "
                              "مثل <code>21</code>.\nدز <code>-</code> لإيقافه."),
     "set_contact": ("contact", "✏️ دز جهة التواصل اللي تطلع بمنشور البيع، مثل <code>@cwvoo</code>.\n"
@@ -1402,17 +1390,6 @@ def handle_input(key, text):
             return "⚠️ أرسل رقم بين 0 و 120."
         store.set("delay", v)
         return f"✅ التأخير: {v} ثانية"
-    if key == "cap":
-        if not text.isdigit():
-            return "⚠️ دز رقم صحيح، أو 0 لبلا حد."
-        store.set("claim_cap_day", int(text))
-        return f"✅ حد الحجز اليومي: {int(text) or '∞'}"
-    if key == "digits":
-        val = "" if text.strip() == "-" else "".join(sorted({str(int(c)) for c in text if c.isdigit()}))
-        if text.strip() != "-" and not val:
-            return "⚠️ دز أرقام مثل 689، أو - لكل الأرقام."
-        store.set("auto_digits", val)
-        return f"✅ الحجز التلقائي للأرقام: {val or 'الكل'}"
     if key == "report":
         if text.strip() == "-":
             store.set("report_hour", -1)
