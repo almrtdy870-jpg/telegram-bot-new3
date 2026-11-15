@@ -317,11 +317,7 @@ class Hunter:
             self.on_found(name, checker.AVAILABLE, source, None)
 
     def _ask_reason(self, name):
-        """Why this free name should be listed instead of claimed (or None).
-        Only word combinations (when their auto-claim is off) are held back;
-        every other free name is claimed right away."""
-        if name in generator.COMBO_NAMES and not self.store.settings.get("combo_claim"):
-            return "combo"
+        """Every free name is claimed right away; nothing is held back."""
         return None
 
     def _try_claim(self, name, source, claimer, notify_wait=True):
