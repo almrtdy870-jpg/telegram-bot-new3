@@ -113,7 +113,17 @@ class Hunter:
                     if name:
                         self._try_claim(name, "account (مؤجل)", c, notify_wait=False)
                         continue
-            # 2) names that need an exact check
+            # 2) check flood but claiming still works: the claim itself is the
+            #    exact check (a taken / banned name just fails), so don't let
+            #    free names wait hours for the check flood to end
+            if (self.verify_q and c.check_flood_left and not c.claim_flood_left
+                    and self.store.settings.get("claim_mode", "off") != "off"):
+                name = self._pop_claimable()
+                if name:
+                    self._claim_unverified(name, c)
+                    time.sleep(1)
+                    continue
+            # 3) names that need an exact check
             if self.verify_q and not c.check_flood_left:
                 name = self._pop(self.verify_q)
                 if not name:
@@ -128,6 +138,37 @@ class Hunter:
                     self._bump("fragment")
                 else:
                     self._bump("taken")
+
+    def _pop_claimable(self):
+        """Oldest queued name that may be claimed automatically (no ask reason)."""
+        with self._q_lock:
+            for i, name in enumerate(self.verify_q):
+                if name in self.reported:
+                    self.verify_q.pop(i)
+                    return None
+                if not self._ask_reason(name):
+                    return self.verify_q.pop(i)
+        return None
+
+    def _claim_unverified(self, name, c):
+        mode = self.store.settings.get("claim_mode", "off")
+        ok, msg = c.claim(name, mode)
+        if not ok and msg.startswith("FLOOD:"):
+            self._queue_verify(name)  # retry when a flood ends
+            return
+        if not ok:
+            self._bump("taken")  # occupied / banned / invalid
+            return
+        self.reported.add(name)
+        self._bump("available")
+        self._bump("claimed")
+        self.store.day_inc("claims")
+        if mode == "account":
+            self.store.set("claim_mode", "off")
+        event(f"🔒 انحجز @{name} (حجز مباشر أثناء فلود الفحص)", "ok")
+        self.store.add_found(name, checker.AVAILABLE, "claim", claimed=True)
+        self.store.update_found(name, account=getattr(c, "last_claim_account", None))
+        self.on_found(name, checker.AVAILABLE, "claim", (True, msg))
 
     # -- watchlist (independent of the hunt) ----------------------------
     def _watch_worker(self):
