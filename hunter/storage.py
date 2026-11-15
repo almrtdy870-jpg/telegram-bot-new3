@@ -30,7 +30,7 @@ DEFAULT_SETTINGS = {
     "notify": "claimed",       # all | claimed | off  (hunt notifications in chat)
     "auto_resume": False,      # restart the hunt by itself after a server restart
     "claim_cap_day": 10,       # automatic claims per day (0 = no limit); extra finds are listed
-    "auto_digits": "689",      # auto-claim only names whose trailing digits are all in this set ("" = any)
+    "auto_digits": "",         # auto-claim only names whose trailing digits are all in this set ("" = any)
     "report_hour": 21,         # local hour of the daily report (-1 = off)
     "watch": [],               # usernames watched for release (claimed the instant they free up)
     "notify_channel": "",      # @channel (or -100... id) that gets a post for every claimed username
@@ -51,9 +51,20 @@ class Store:
                     loaded = json.load(f)
                 self.data.update(loaded)
                 self.data["settings"] = {**DEFAULT_SETTINGS, **loaded.get("settings", {})}
+                self._migrate()
                 self.file_saved_at = loaded.get("saved_at", 0)
             except (OSError, ValueError):
                 pass
+
+    def _migrate(self):
+        """One-time fixes for settings saved by older versions."""
+        st = self.data["settings"]
+        if not self.data.get("mig_digits"):
+            # the old default "689" silently skipped every free name ending in
+            # another digit (they were only listed, never claimed)
+            if st.get("auto_digits") == "689":
+                st["auto_digits"] = ""
+            self.data["mig_digits"] = True
 
     def save(self):
         with self.lock:
@@ -80,6 +91,7 @@ class Store:
                 return False
             self.data.update(loaded)
             self.data["settings"] = {**DEFAULT_SETTINGS, **loaded.get("settings", {})}
+            self._migrate()
             self.save()
             self.dirty = False
             return True

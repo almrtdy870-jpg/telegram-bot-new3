@@ -190,7 +190,10 @@ def on_found(username, status, source, claim_result):
                  {"inline_keyboard": [[btn("📌 احجزه", f"claim:{username}")]]} if not ok else None)
         return
     mode = store.settings.get("notify", "claimed")
-    if mode == "off" or (mode == "claimed" and not claimed):
+    # a free name whose claim FAILED is always reported (with a claim button),
+    # otherwise it was lost silently while the instant claim worked fine
+    failed = claim_result is not None and not claimed
+    if mode == "off" or (mode == "claimed" and not claimed and not failed):
         return  # still saved in results + shown on the dashboard
     if status == checker.FRAGMENT:
         bot.send(chat_id, f"💎 <b>يوزر معروض في فراجمنت</b>\n@{username}\n"
