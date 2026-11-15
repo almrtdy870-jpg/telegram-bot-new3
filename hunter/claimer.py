@@ -128,6 +128,13 @@ class Claimer:
     def _run(self, coro, timeout=60):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
 
+    async def _ensure_connected(self):
+        """Telethon gives up reconnecting after a few failed tries and then
+        every request raises "Cannot send requests while disconnected" forever,
+        so the account silently stops checking and claiming. Reconnect here."""
+        if self.client is not None and not self.client.is_connected():
+            await self.client.connect()
+
     def start(self):
         if TelegramClient is None:
             self.last_error = "telethon غير مثبت"
@@ -219,6 +226,7 @@ class Claimer:
 
     async def _check(self, username):
         try:
+            await self._ensure_connected()
             ok = await self.client(functions.account.CheckUsernameRequest(username))
             return checker.AVAILABLE if ok else checker.TAKEN
         except errors.FloodWaitError as e:
@@ -236,9 +244,12 @@ class Claimer:
             return checker.INVALID
         except errors.UsernameOccupiedError:
             return checker.TAKEN
+        except errors.UsernamePurchaseAvailableError:
+            # str(e) of this error is empty (only "(caused by ...)"), so the old
+            # text check never matched: the name counted as "no answer", went
+            # back to the verify queue and was re-checked forever.
+            return checker.FRAGMENT
         except errors.RPCError as e:
-            if "PURCHASE_AVAILABLE" in str(e).upper():
-                return checker.FRAGMENT
             if self._mark_frozen(e):
                 return None
             raise
@@ -303,6 +314,7 @@ class Claimer:
 
     async def _release(self, username):
         try:
+            await self._ensure_connected()
             res = await self.client(functions.channels.GetAdminedPublicChannelsRequest())
             ch = next((c for c in res.chats if (getattr(c, "username", "") or "").lower() == username), None)
             if ch is None:
@@ -322,11 +334,20 @@ class Claimer:
 
     async def _claim(self, username, mode):
         try:
+            await self._ensure_connected()
             if mode == "account":
                 await self.client(functions.account.UpdateUsernameRequest(username))
                 return True, "تم تثبيته على حسابك"
             holder = await self._get_holder()
-            await self.client(functions.channels.UpdateUsernameRequest(holder, username))
+            try:
+                await self.client(functions.channels.UpdateUsernameRequest(holder, username))
+            except (errors.ChannelInvalidError, errors.ChannelPrivateError,
+                    errors.ChatAdminRequiredError, errors.ChatWriteForbiddenError):
+                # the reused "Reserved" channel was deleted / left by hand:
+                # every claim on this account failed until a restart
+                self._holder = None
+                holder = await self._get_holder()
+                await self.client(functions.channels.UpdateUsernameRequest(holder, username))
             self._holder = None  # this channel now owns the username
             self._public = None
             try:
@@ -337,6 +358,12 @@ class Claimer:
         except errors.FloodWaitError as e:
             self.claim_flood_until = time.time() + e.seconds
             return False, f"FLOOD:{e.seconds}"
+        except errors.UsernamePurchaseAvailableError:
+            return False, "معروض للبيع بفراجمنت (محجوز)"
+        except errors.UsernameInvalidError:
+            return False, "UsernameInvalid: محظور أو محجوز من تليجرام"
+        except errors.UsernameOccupiedError:
+            return False, "انحجز قبلك (محجوز)"
         except errors.RPCError as e:
             if self._mark_frozen(e):
                 return False, "الحساب مجمّد من تليجرام"
