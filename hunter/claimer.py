@@ -79,6 +79,7 @@ class Claimer:
         self.label = label
         self.full = False  # hit the public-channel limit
         self.frozen = False  # Telegram froze this account
+        self._restricted_until = 0.0  # spam-reported: can't create channels, so can't claim
         self._public = None      # cached [(username, title)] of public channels this account owns
         self._public_at = 0.0
         self.api_id = int(api_id)
@@ -101,6 +102,16 @@ class Claimer:
         self.auto = True  # learn the best interval for this account by itself
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
+
+    @property
+    def restricted(self):
+        # re-tried every few hours: Telegram lifts spam limits by itself
+        return time.time() < self._restricted_until
+
+    @property
+    def blocked(self):
+        """Can't claim right now: public-channel limit or spam restriction."""
+        return self.full or self.restricted
 
     # -- plumbing -------------------------------------------------------
     def _mark_frozen(self, exc):
@@ -330,6 +341,14 @@ class Claimer:
             if self._mark_frozen(e):
                 return False, "الحساب مجمّد من تليجرام"
             name = type(e).__name__
+            if "Restricted" in name or "SPAMREPORT" in str(e).upper():
+                if not self.restricted:
+                    who = (f"@{self.me.username}" if self.me and self.me.username
+                           else str(self.me.id) if self.me else self.label)
+                    error(f"🚫 الحساب {who} مقيّد (سبام) وما يگدر يسوي قنوات - انوقف الحجز عليه. "
+                          "راسل @SpamBot حتى ينفك القيد")
+                self._restricted_until = time.time() + 6 * 3600
+                return False, "الحساب مقيّد (سبام) وما يگدر يسوي قنوات"
             if "TooMuch" in name or "TOO_MUCH" in str(e).upper():
                 self._holder = None
                 self.full = True

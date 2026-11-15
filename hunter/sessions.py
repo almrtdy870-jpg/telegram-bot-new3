@@ -73,7 +73,7 @@ class SessionPool:
 
     @property
     def claim_flood_left(self):
-        a = [c for c in self.active if not c.full]
+        a = [c for c in self.active if not c.blocked]
         if not a:
             return 0
         return min(c.claim_flood_left for c in a)
@@ -81,6 +81,10 @@ class SessionPool:
     @property
     def flood_left(self):
         return max(self.check_flood_left, self.claim_flood_left)
+
+    @property
+    def can_claim(self):
+        return any(not c.blocked for c in self.active)
 
     def _rotation(self):
         a = self.active
@@ -124,9 +128,9 @@ class SessionPool:
         return None
 
     def claim(self, username, mode="channel"):
-        candidates = [c for c in self._rotation() if not c.full]
+        candidates = [c for c in self._rotation() if not c.blocked]
         if not candidates:
-            return False, "كل الجلسات وصلت حد القنوات العامة"
+            return False, "كل الجلسات وصلت حد القنوات العامة أو مقيّدة"
         last = ""
         for c in candidates:
             if c.claim_flood_left or not c.ready:
@@ -137,16 +141,16 @@ class SessionPool:
                 self.last_claim_account = c.me.id if c.me else None
                 self.verdicts.pop(username, None)
                 return True, f"{msg} ({label})"
-            if msg.startswith("FLOOD:") or c.full:
+            if msg.startswith("FLOOD:") or c.blocked:
                 continue  # try the next account
             if "محجوز" in msg or "Occupied" in msg or "Invalid" in msg:
                 return False, msg  # the name itself is the problem: other accounts won't help
             last = f"{msg} ({account_name(c)})"  # account-specific error: try the next one
         if last:
             return False, last
-        if any(not c.full for c in self.active):
+        if any(not c.blocked for c in self.active):
             return False, f"FLOOD:{max(1, self.claim_flood_left)}"
-        return False, "كل الجلسات وصلت حد القنوات العامة"
+        return False, "كل الجلسات وصلت حد القنوات العامة أو مقيّدة"
 
 
 def account_name(c):

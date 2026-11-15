@@ -117,6 +117,7 @@ class Hunter:
             #    exact check (a taken / banned name just fails), so don't let
             #    free names wait hours for the check flood to end
             if (self.verify_q and c.check_flood_left and not c.claim_flood_left
+                    and getattr(c, "can_claim", True)
                     and self.store.settings.get("claim_mode", "off") != "off"):
                 name = self._pop_claimable()
                 if name:
@@ -153,8 +154,8 @@ class Hunter:
     def _claim_unverified(self, name, c):
         mode = self.store.settings.get("claim_mode", "off")
         ok, msg = c.claim(name, mode)
-        if not ok and msg.startswith("FLOOD:"):
-            self._queue_verify(name)  # retry when a flood ends
+        if not ok and (msg.startswith("FLOOD:") or "كل الجلسات" in msg or "مقيّد" in msg):
+            self._queue_verify(name)  # not the name's fault: retry later / on another account
             return
         if not ok:
             self._bump("taken")

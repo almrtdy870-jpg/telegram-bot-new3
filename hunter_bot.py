@@ -834,7 +834,7 @@ def sessions_menu():
     rows = []
     for i, c in enumerate(pool.sessions):
         if c.ready:
-            icon = "🧊" if c.flood_left else ("🈵" if c.full else "🟢")
+            icon = "🧊" if c.flood_left else ("🚫" if c.restricted else "🈵" if c.full else "🟢")
             name = f"@{c.me.username}" if c.me.username else str(c.me.id)
         else:
             icon, name = ("🥶", "مجمّد") if getattr(c, "frozen", False) else ("🔴", "غير متصل")
@@ -874,6 +874,8 @@ def session_detail(i):
         t += f"• 🧊 فلود الحجز: {fmt_wait(c.claim_flood_left)}\n"
     if c.full:
         t += "• 🈵 وصلت حد القنوات العامة\n"
+    if c.restricted:
+        t += "• 🚫 مقيّدة (سبام): ما تگدر تسوي قنوات، فما تحجز. راسل @SpamBot\n"
     return t
 
 
@@ -1792,7 +1794,7 @@ def handle_callback(cq):
     elif data.startswith("mv:"):
         name = data[3:]
         rows = [[btn(f"↗️ {account_name(c)}", f"mvto:{name}:{i}")]
-                for i, c in enumerate(pool.sessions) if c.ready and not c.full]
+                for i, c in enumerate(pool.sessions) if c.ready and not c.blocked]
         rows.append([btn("🔙 رجوع", f"res:{name}")])
         bot.edit(chat_id, mid, f"↗️ لأي حساب تنقل <b>@{name}</b>؟\n\n"
                                "⚠️ النقل يحرر اليوزر لثواني حتى الحساب الثاني يحجزه. "
@@ -2089,10 +2091,10 @@ def webapp_state():
     sessions = []
     for c in pool.sessions:
         if c.ready:
-            icon = "🧊" if c.flood_left else ("🈵" if c.full else "🟢")
+            icon = "🧊" if c.flood_left else ("🚫" if c.restricted else "🈵" if c.full else "🟢")
             name = f"@{c.me.username}" if c.me.username else str(c.me.id)
             note = (f"فلود {fmt_wait(c.flood_left)}" if c.flood_left else
-                    ("وصلت حد القنوات" if c.full else "متصلة"))
+                    ("مقيّدة (سبام)" if c.restricted else "وصلت حد القنوات" if c.full else "متصلة"))
         else:
             icon, name, note = "🔴", "غير متصلة", c.last_error[:60]
         sessions.append({"icon": icon, "name": name, "source": c.label, "note": note})
