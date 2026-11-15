@@ -198,7 +198,8 @@ class Hunter:
             name = watch[i % len(watch)]
             i += 1
             try:
-                res = c.check(name)
+                # fresh: a cached "taken" verdict (kept 6h) would hide the release
+                res = c.check(name, fresh=True) if hasattr(c, "verdicts") else c.check(name)
             except Exception:  # noqa: BLE001
                 continue
             if res != checker.AVAILABLE:

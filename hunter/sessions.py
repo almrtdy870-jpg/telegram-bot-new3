@@ -105,8 +105,8 @@ class SessionPool:
     VERDICT_TTL = 6 * 3600
     VERDICT_MAX = 300_000
 
-    def check(self, username):
-        cached = self.verdicts.get(username)
+    def check(self, username, fresh=False):
+        cached = None if fresh else self.verdicts.get(username)
         if cached and time.time() - cached[1] < self.VERDICT_TTL:
             return cached[0]
         res = self._check(username)
