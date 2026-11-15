@@ -157,7 +157,10 @@ class Hunter:
             self._queue_verify(name)  # retry when a flood ends
             return
         if not ok:
-            self._bump("taken")  # occupied / banned / invalid
+            self._bump("taken")
+            if "محجوز" not in msg and "Occupied" not in msg:
+                # not just "taken": show why, otherwise failures are invisible
+                error(f"ما انحجز @{name} (حجز مباشر): {msg}")
             return
         self.reported.add(name)
         self._bump("available")

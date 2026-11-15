@@ -127,8 +127,9 @@ class SessionPool:
         candidates = [c for c in self._rotation() if not c.full]
         if not candidates:
             return False, "كل الجلسات وصلت حد القنوات العامة"
+        last = ""
         for c in candidates:
-            if c.claim_flood_left:
+            if c.claim_flood_left or not c.ready:
                 continue
             ok, msg = c.claim(username, mode)
             if ok:
@@ -138,7 +139,11 @@ class SessionPool:
                 return True, f"{msg} ({label})"
             if msg.startswith("FLOOD:") or c.full:
                 continue  # try the next account
-            return False, msg  # occupied / invalid: other accounts won't help
+            if "محجوز" in msg or "Occupied" in msg or "Invalid" in msg:
+                return False, msg  # the name itself is the problem: other accounts won't help
+            last = f"{msg} ({account_name(c)})"  # account-specific error: try the next one
+        if last:
+            return False, last
         if any(not c.full for c in self.active):
             return False, f"FLOOD:{max(1, self.claim_flood_left)}"
         return False, "كل الجلسات وصلت حد القنوات العامة"
