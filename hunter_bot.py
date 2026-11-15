@@ -539,8 +539,7 @@ def combo_text():
             f"• عدد الأسماء بالدورة: <b>{combo_total():,}</b>" + (f" (الحد {MAX_COMBO_NAMES:,})" if a and b else "") + "\n")
     on = "combo" in (s.get("sources") or [])
     text += f"• الحالة: {'✅ مختارة للصيد' if on else '❌ مو مختارة'}\n"
-    text += ("• المتاح: <b>ينحجز تلقائياً</b>" if s.get("combo_claim")
-             else "• المتاح: <b>يجيك بقائمة وأنت تختار شنو ينحجز</b> (أأمن للحسابات)")
+    text += "• المتاح: <b>ينحجز تلقائياً</b>"
     return text
 
 
@@ -549,8 +548,7 @@ def combo_menu():
     on = "combo" in (s.get("sources") or [])
     ready = bool(s.get("combo_a") and s.get("combo_b"))
     rows = [[btn("1️⃣ القائمة الأولى", "combo_a"), btn("2️⃣ القائمة الثانية", "combo_b")],
-            [btn(f"🔀 بالاتجاهين (walletgold هم): {'✅' if s.get('combo_both') else '❌'}", "combo_both")],
-            [btn(f"🔒 حجز تلقائي: {'✅' if s.get('combo_claim') else '❌'}", "combo_claim")]]
+            [btn(f"🔀 بالاتجاهين (walletgold هم): {'✅' if s.get('combo_both') else '❌'}", "combo_both")]]
     if ready:
         rows.append([btn("❌ إلغاء من الصيد" if on else "✅ اختارها للصيد", "combo_toggle")])
     rows.append([btn("🗑 مسح القائمتين", "combo_clear"), btn("🔙 رجوع", "modes")])
@@ -1506,10 +1504,9 @@ def handle_callback(cq):
         which = "الأولى (بداية الاسم)" if data == "combo_a" else "الثانية (نهاية الاسم)"
         bot.send(chat_id, f"📝 دز كلمات القائمة <b>{which}</b>، كل كلمة بسطر أو بينهن مسافة.\n"
                           "حروف إنجليزية وأرقام بس. (تبدّل القائمة القديمة)", BACK)
-    elif data in ("combo_both", "combo_claim"):
+    elif data == "combo_both":
         store.set(data, not s.get(data))
-        if data == "combo_both":
-            combo_changed()
+        combo_changed()
         bot.edit(chat_id, mid, combo_text(), combo_menu())
     elif data == "combo_toggle":
         on = "combo" in (s.get("sources") or [])
