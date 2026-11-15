@@ -167,7 +167,7 @@ class Hunter:
             return
         if not ok:
             self._bump("taken")
-            if "محجوز" not in msg and "Occupied" not in msg:
+            if not any(k in msg for k in ("محجوز", "Occupied", "Invalid")):
                 # not just "taken": show why, otherwise failures are invisible
                 error(f"ما انحجز @{name} (حجز مباشر): {msg}")
             return
