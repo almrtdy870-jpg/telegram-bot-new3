@@ -279,12 +279,16 @@ class Hunter:
                 if source == "account":
                     self._bump("available")
                     self._confirmed(name, source, claimer)
-                elif claimer is not None:
-                    # sessions exist but are flood-limited / offline:
+                elif claimer is not None and claimer.ready:
+                    # sessions are connected but flood-limited:
                     # verify silently later instead of spamming
                     self._queue_verify(name)
                 else:
-                    # no sessions at all: only t.me/fragment, unverified - batch it
+                    # no working session (none added, or all dead / frozen /
+                    # logged out): the verify queue would never drain and the
+                    # name would be lost silently, so report it as unverified
+                    if claimer is not None:
+                        self._warn_no_session(claimer)
                     with self._q_lock:
                         self.maybe_buf.append(name)
                     self.store.add_found(name, "unverified", source)
@@ -292,6 +296,18 @@ class Hunter:
             delay = float(self.store.settings.get("delay", 0.5) or 0)
             if delay:
                 time.sleep(delay)
+
+    _no_session_warned_at = 0.0
+
+    def _warn_no_session(self, claimer):
+        """Tell the user (at most once an hour) that every session is down."""
+        now = time.time()
+        if now - self._no_session_warned_at < 3600:
+            return
+        self._no_session_warned_at = now
+        error("⚠️ كل الجلسات واقفة (مفصولة / مجمّدة / طالعة من الحساب) - "
+              f"ما ينحجز شي! السبب: {getattr(claimer, 'last_error', '?')}. "
+              "افحص 🔑 الجلسات وضيف جلسة شغّالة")
 
     def _confirmed(self, name, source, claimer):
         # endless rounds re-check names: report/claim each one only once
