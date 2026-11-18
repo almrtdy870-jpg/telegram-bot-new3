@@ -869,6 +869,10 @@ def session_detail(i):
          f"• يفحص كل: {c.interval:.1f} ثانية{' (تلقائي)' if c.auto else ''}\n")
     if c.check_flood_left:
         t += f"• 🧊 فلود الفحص: {fmt_wait(c.check_flood_left)}\n"
+    t += f"• 📦 قنوات جاهزة للحجز: {getattr(c, 'spares', 0)}\n"
+    cf = max(0, int(getattr(c, "create_flood_until", 0) - time.time()))
+    if cf:
+        t += f"• 🧊 فلود إنشاء قنوات: {fmt_wait(cf)} (الحجز يمشي على القنوات الجاهزة)\n"
     if c.claim_flood_left:
         t += f"• 🧊 فلود الحجز: {fmt_wait(c.claim_flood_left)}\n"
     if c.full:
