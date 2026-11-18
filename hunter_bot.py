@@ -443,99 +443,9 @@ def tools_menu():
     n = len(store.settings.get("watch", []))
     return {"inline_keyboard": [
         [btn("🔍 فحص يوزر", "check", "primary"), btn("📌 حجز يوزر", "manual_claim", "success")],
-        [btn(f"🎯 مراقبة يوزر ({n})", "watch", "primary"), btn("🛡 تجهيز بلاغ", "rp", "success")],
+        [btn(f"🎯 مراقبة يوزر ({n})", "watch", "primary")],
         [btn("🔙 رجوع", "menu")],
     ]}
-
-
-# ---------------------------------------------------------------- report helper
-# Prepares a correct, well-formed report for the user to send THEMSELVES
-# (email / IWF form / in-app). It never reports anything on its own.
-REPORT_TYPES = {
-    "csam": ("🚫 إساءة أطفال", "sharing child sexual abuse material (CSAM)"),
-    "drugs": ("💊 مخدرات", "selling illegal drugs"),
-    "porn": ("🔞 إباحي", "sharing pornographic content"),
-}
-report_ctx = {}  # chat id -> set of selected types
-_TG_LINK = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/(?:c/)?[A-Za-z0-9_+/\-]+", re.I)
-
-
-def report_text():
-    return ("🛡 <b>تجهيز بلاغ</b>\n\n"
-            "البوت <b>ما يبلّغ بنفسه</b>. يجهّزلك نص بلاغ مرتب وجاهز للنسخ، وإنت تدزه.\n\n"
-            "1️⃣ اختار نوع المخالفة (تگدر أكثر من وحدة)\n"
-            "2️⃣ اضغط ✅ التالي ودز الروابط\n\n"
-            "⚠️ دز <b>روابط بس</b>. لا تحفظ ولا تدز صور أو فيديوات.")
-
-
-def report_menu(chat_id):
-    sel = report_ctx.setdefault(chat_id, set())
-    rows = [[btn(("☑️ " if k in sel else "⬜ ") + label.split(" ", 1)[1], f"rp_t:{k}",
-                 "success" if k in sel else "primary")]
-            for k, (label, _en) in REPORT_TYPES.items()]
-    rows.append([btn("✅ التالي", "rp_next")])
-    rows.append([btn("🔙 الأدوات", "tools")])
-    return {"inline_keyboard": rows}
-
-
-def build_report(chat_id, text):
-    """Return [message, ...] with ready-to-send report texts, or None."""
-    links = []
-    for m in _TG_LINK.findall(text or ""):
-        url = m if m.lower().startswith("http") else "https://" + m
-        url = url.rstrip("/.,)")
-        if url not in links:
-            links.append(url)
-    if not links:
-        return None
-    # a link ending in /<number> points at a message, otherwise at the group
-    msgs = [u for u in links if re.search(r"/\d+$", u)]
-    groups = [u for u in links if u not in msgs]
-    if not groups and msgs:
-        groups = sorted({re.sub(r"/\d+$", "", u) for u in msgs})
-    sel = report_ctx.get(chat_id) or {"csam"}
-    today = time.strftime("%Y-%m-%d", time.gmtime())
-    g_lines = "\n".join(groups)
-    m_lines = "\n".join(msgs) or "(see the group link above)"
-
-    def body(what):
-        return ("Hello Telegram Abuse Team,\n\n"
-                f"I am reporting the following Telegram group/channel for {what}.\n\n"
-                f"Group/channel:\n{g_lines}\n\n"
-                f"Message links:\n{m_lines}\n\n"
-                f"Date observed: {today}\n\n"
-                "I have not downloaded or saved any of this content. "
-                "Please review it and remove the content and the group.\n\nThank you.")
-
-    out = []
-    if "csam" in sel:
-        out.append("🚫 <b>بلاغ إساءة الأطفال (الأهم)</b>\n\n"
-                   "📧 <b>إلى:</b> <code>stopCA@telegram.org</code>\n"
-                   "📝 <b>الموضوع:</b> <code>Report: child sexual abuse material on Telegram</code>\n\n"
-                   "<b>النص</b> (اضغط عليه حتى ينسخ):\n"
-                   f"<pre>{html.escape(body(REPORT_TYPES['csam'][1]))}</pre>")
-        out.append("🌐 <b>وبلّغ هم على IWF</b> (منظمة دولية تتواصل ويا تليجرام مباشرة)\n\n"
-                   "1️⃣ افتح: https://report.iwf.org.uk\n"
-                   "2️⃣ بالرابط حط هذا (اضغط حتى ينسخ):\n"
-                   + "\n".join(f"<code>{html.escape(u)}</code>" for u in (msgs or groups)[:10])
-                   + "\n3️⃣ بالوصف اكتب: <code>Telegram group sharing child sexual abuse material</code>\n"
-                   "4️⃣ تگدر تبلّغ بدون اسم.")
-    other = [REPORT_TYPES[k][1] for k in ("drugs", "porn") if k in sel]
-    if other:
-        what = " and ".join(other)
-        out.append("📮 <b>بلاغ " + " و ".join(REPORT_TYPES[k][0] for k in ("drugs", "porn") if k in sel)
-                   + "</b>\n\n"
-                   "📧 <b>إلى:</b> <code>abuse@telegram.org</code>\n"
-                   f"📝 <b>الموضوع:</b> <code>Report: {html.escape(what)} on Telegram</code>\n\n"
-                   "<b>النص</b> (اضغط عليه حتى ينسخ):\n"
-                   f"<pre>{html.escape(body(what))}</pre>")
-    reasons = " / ".join(REPORT_TYPES[k][0] for k in REPORT_TYPES if k in sel)
-    out.append("📱 <b>وبلّغ من داخل تليجرام هم</b> (الأسرع)\n\n"
-               "اضغط مطوّل على كل رسالة مخالفة ← <b>إبلاغ</b> ← اختار: " + reasons + "\n"
-               "تگدر تحدد كذا رسالة وتبلّغ عليهن مرة وحدة.\n\n"
-               "✅ دز الإيميل من إيميلك العادي. بلّغ <b>مرة وحدة</b> بكل جهة، "
-               "والتكرار ما يسرّع. بعدها اطلع من المجموعة.")
-    return out
 
 
 def watch_text():
@@ -1721,23 +1631,6 @@ def handle_callback(cq):
     elif data == "modes":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, modes_text(), modes_menu())
-    elif data == "rp":
-        states.pop(chat_id, None)
-        report_ctx[chat_id] = {"csam"}
-        bot.edit(chat_id, mid, report_text(), report_menu(chat_id))
-    elif data.startswith("rp_t:"):
-        sel = report_ctx.setdefault(chat_id, set())
-        sel ^= {data[5:]}
-        bot.edit(chat_id, mid, report_text(), report_menu(chat_id))
-    elif data == "rp_next":
-        if not report_ctx.get(chat_id):
-            bot.send(chat_id, "⚠️ اختار نوع المخالفة أول.")
-            return
-        states[chat_id] = "report_links"
-        bot.send(chat_id, "🔗 دز الروابط (كل رابط بسطر):\n"
-                          "• رابط المجموعة، مثل <code>https://t.me/xxxx</code>\n"
-                          "• وروابط الرسائل المخالفة: اضغط مطوّل على الرسالة ← <b>نسخ الرابط</b>\n\n"
-                          "⚠️ روابط بس، لا تدز صور.", BACK)
     elif data == "tools":
         states.pop(chat_id, None)
         bot.edit(chat_id, mid, "🛠 <b>الأدوات</b>\n\n🔍 <b>فحص يوزر</b>: تشوف إذا يوزر متاح\n"
@@ -2080,21 +1973,6 @@ def handle_message(msg):
             bot.send(chat_id, "⚠️ ما گدرت أقرأ الملف (الحد 5MB).")
             return
         text = content
-
-    if state == "report_links":
-        if "document" in msg:
-            bot.send(chat_id, "⚠️ دز <b>روابط بس</b>، مو ملفات أو صور.", BACK)
-            return
-        parts = build_report(chat_id, text)
-        if not parts:
-            bot.send(chat_id, "⚠️ ما لگيت روابط تليجرام. دز روابط مثل <code>https://t.me/xxxx/123</code>", BACK)
-            return
-        states.pop(chat_id, None)
-        for p in parts:
-            bot.send(chat_id, p)
-        bot.send(chat_id, "✅ البلاغ جاهز. انسخ ودز.", {"inline_keyboard": [
-            [btn("🛡 بلاغ جديد", "rp")], [btn("🔙 رجوع", "menu")]]})
-        return
 
     if state == "pemoji":
         found = custom_emojis(msg)
