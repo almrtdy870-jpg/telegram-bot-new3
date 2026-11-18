@@ -361,8 +361,8 @@ HELP = (
 # primary = blue. Older Telegram apps just show a normal button.
 _RED_DATA = ("stop", "clear_found_ok", "rep_clear_ok", "weak_ok", "errors_clear",
              "combo_clear", "rep_clear", "clear_found", "watch_clear", "weak")
-_RED_START = ("⏹", "🗑", "❌", "🚫", "⛔")
-_GREEN_START = ("▶️", "✅", "➕", "💾", "📥")
+_RED_START = ("⏹", "🗑", "❌", "🚫", "⛔", "🔙")
+_GREEN_START = ("▶️", "✅", "➕", "💾", "📥", "🟢")
 _BLUE_START = ("📌", "🔍", "🔄", "🎯", "🔑")
 _RED_WORDS = ("حذف", "إيقاف", "وقّف", "تحرير", "حرر")
 
@@ -374,12 +374,12 @@ def btn_style(text, data=""):
     if data == "noop":
         return None  # page counters / spacers stay plain
     if data.startswith(("set_", "toggle_", "cycle_")):
-        return "danger"
+        return "primary"  # settings rows: blue
     if data.startswith("claim") or t.startswith(_GREEN_START):
         return "success"
     if t.startswith(_BLUE_START):
         return "primary"
-    return "danger"  # every other button is red
+    return "primary"  # menus / info: blue
 
 
 def btn(text, data, style=None):
@@ -400,12 +400,13 @@ WEBAPP_URL = (f"{WEBHOOK_URL}/app" if WEBHOOK_URL.startswith("https://")
 
 def main_menu():
     run = btn("⏹ إيقاف الصيد", "stop") if hunter.running else btn("▶️ تشغيل الصيد", "start")
-    top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}, "style": "danger"}]] if WEBAPP_URL else []
+    top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}, "style": "primary"}]] if WEBAPP_URL else []
+    # checkerboard: blue / green alternate, red only for stop
     return {"inline_keyboard": top + [
         [run],
-        [btn("🎯 طرق الصيد", "modes"), btn("🛠 الأدوات", "tools")],
-        [btn("🔑 الجلسات", "sessions"), btn("⚙️ الإعدادات", "settings")],
-        [btn("🏆 النتائج", "found"), btn("📊 الإحصائيات", "stats")],
+        [btn("🎯 طرق الصيد", "modes", "primary"), btn("🛠 الأدوات", "tools", "success")],
+        [btn("🔑 الجلسات", "sessions", "success"), btn("⚙️ الإعدادات", "settings", "primary")],
+        [btn("🏆 النتائج", "found", "primary"), btn("📊 الإحصائيات", "stats", "success")],
     ]}
 
 
@@ -427,10 +428,10 @@ def modes_text():
 
 def modes_menu():
     rows = [
-        [btn("🎯 أنواع جاهزة", "presets"), btn("🔤 تغيير حرف بالطلب", "replace")],
-        [btn("🧬 بحث مشابه", "set_similar"), btn("✍️ قالب مخصص", "set_template")],
-        [btn("📜 قائمة كلمات", "set_words"), btn("📈 ترند المزاد", "trends")],
-        [btn("🧩 تركيب كلمات", "combo")],
+        [btn("🎯 أنواع جاهزة", "presets", "success"), btn("🔤 تغيير حرف بالطلب", "replace", "primary")],
+        [btn("🧬 بحث مشابه", "set_similar", "primary"), btn("✍️ قالب مخصص", "set_template", "success")],
+        [btn("📜 قائمة كلمات", "set_words", "success"), btn("📈 ترند المزاد", "trends", "primary")],
+        [btn("🧩 تركيب كلمات", "combo", "success")],
     ]
     for i, k in enumerate(store.settings.get("sources") or []):
         rows.append([btn(f"❌ إلغاء: {source_label(store.settings, k)}"[:60], f"src_off:{i}")])
@@ -441,8 +442,8 @@ def modes_menu():
 def tools_menu():
     n = len(store.settings.get("watch", []))
     return {"inline_keyboard": [
-        [btn("🔍 فحص يوزر", "check"), btn("📌 حجز يوزر", "manual_claim")],
-        [btn(f"🎯 مراقبة يوزر ({n})", "watch")],
+        [btn("🔍 فحص يوزر", "check", "primary"), btn("📌 حجز يوزر", "manual_claim", "success")],
+        [btn(f"🎯 مراقبة يوزر ({n})", "watch", "primary")],
         [btn("🔙 رجوع", "menu")],
     ]}
 
@@ -2202,7 +2203,7 @@ def poll_forever():
 
 
 RESTORE_KB = {"inline_keyboard": [[{"text": "🔄 حاول الاسترجاع", "callback_data": "restore_retry", "style": "primary"}],
-                                  [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh", "style": "danger"}]]}
+                                  [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh", "style": "primary"}]]}
 
 
 def restore_failed_notice():
