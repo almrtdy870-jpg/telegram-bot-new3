@@ -8,9 +8,13 @@ Flood control:
     interval doubles after a FloodWait and slowly returns to `base_interval`;
   * check and claim floods are tracked separately, since Telegram limits each
     method on its own;
-  * a single "holder" channel is reused until a username actually sticks, so
-    failed claims don't create (and delete) channels - channel creation is one
-    of the most heavily rate-limited actions.
+  * each account keeps a small stock of empty private "Reserved" channels made
+    ahead of time. A claim then only needs channels.UpdateUsername, so a
+    CreateChannel flood (often 10-20 hours) no longer blocks claiming. Floods
+    are tracked per method (create / set username / account username): a flood
+    on one no longer stops the others;
+  * if every channel path is flooded and the account has no username of its
+    own, the name is put on the account itself instead of being lost.
 """
 import asyncio
 import base64
@@ -31,6 +35,9 @@ CHECK_INTERVAL = 4.0  # default seconds between account.checkUsername calls
 MAX_INTERVAL = 60.0
 AUTO_MIN = 2.5        # auto mode never goes faster than this
 AUTO_MAX_BASE = 12.0  # ...and never learns a base slower than this
+SPARE_TARGET = 2      # empty holder channels kept ready per account
+REFILL_EVERY = 90     # seconds between stock refills
+HOLDER_TITLE = "Reserved"
 
 
 # Telegram production data centres (needed to turn a Pyrogram session into Telethon's)
@@ -89,9 +96,13 @@ class Claimer:
         self.me = None
         self.ready = False
         self.check_flood_until = 0.0
-        self.claim_flood_until = 0.0
+        # claim floods, per Telegram method (each is limited on its own)
+        self.create_flood_until = 0.0   # channels.CreateChannel
+        self.set_flood_until = 0.0      # channels.UpdateUsername
+        self.acct_flood_until = 0.0     # account.UpdateUsername
         self.last_error = ""
-        self._holder = None
+        self._spares = []   # empty private holder channels, ready to take a username
+        self._refill_started = False
         self._claim_lock = threading.Lock()
         self._check_lock = threading.Lock()
         self._next_slot = 0.0    # earliest time the next check may run
@@ -142,6 +153,9 @@ class Claimer:
         try:
             self.me = self._run(self._start())
             self.ready = self.me is not None
+            if self.ready and not self._refill_started:
+                self._refill_started = True
+                asyncio.run_coroutine_threadsafe(self._refill_loop(), self.loop)
             if not self.ready:
                 self.last_error = "الجلسة غير مسجلة الدخول (session string غير صالح)"
         except Exception as e:  # noqa: BLE001
@@ -173,8 +187,30 @@ class Claimer:
         return max(0, int(self.check_flood_until - time.time()))
 
     @property
+    def channel_wait(self) -> int:
+        """Seconds until a name can be put on a channel (0 = now)."""
+        now = time.time()
+        w = self.set_flood_until - now
+        if not self._spares:  # would have to create a channel first
+            w = max(w, self.create_flood_until - now)
+        return max(0, int(w))
+
+    @property
+    def account_fallback(self) -> bool:
+        """The account has no username of its own, so a name can safely go
+        on the account when every channel path is flooded."""
+        return self.me is not None and not getattr(self.me, "username", None)
+
+    @property
     def claim_flood_left(self) -> int:
-        return max(0, int(self.claim_flood_until - time.time()))
+        w = self.channel_wait if not self.full else 10 ** 9
+        if self.account_fallback:
+            w = min(w, max(0, int(self.acct_flood_until - time.time())))
+        return 0 if w >= 10 ** 9 else w
+
+    @property
+    def spares(self) -> int:
+        return len(self._spares)
 
     @property
     def flood_left(self) -> int:
@@ -267,12 +303,57 @@ class Claimer:
             except Exception as e:  # noqa: BLE001
                 return False, str(e)
 
-    async def _get_holder(self):
-        if self._holder is None:
+    # -- holder stock ----------------------------------------------------
+    async def _create_holder(self):
+        """Make one empty private channel. Returns it, or None on a flood /
+        restriction (recorded so nobody retries before it ends)."""
+        if time.time() < self.create_flood_until or self.restricted:
+            return None
+        try:
+            await self._ensure_connected()
             res = await self.client(functions.channels.CreateChannelRequest(
-                title="Reserved", about="Reserved", broadcast=True))
-            self._holder = res.chats[0]
-        return self._holder
+                title=HOLDER_TITLE, about=HOLDER_TITLE, broadcast=True))
+            return res.chats[0]
+        except errors.FloodWaitError as e:
+            self.create_flood_until = time.time() + e.seconds
+            return None
+        except errors.RPCError as e:
+            if self._mark_frozen(e):
+                return None
+            if "Restricted" in type(e).__name__ or "SPAMREPORT" in str(e).upper():
+                self._restricted_until = time.time() + 6 * 3600
+            self.last_error = f"{type(e).__name__}: {e}"
+            return None
+
+    async def _load_spares(self):
+        """Reuse empty "Reserved" channels left from earlier runs."""
+        found = []
+        async for d in self.client.iter_dialogs():
+            e = d.entity
+            if (getattr(e, "broadcast", False) and getattr(e, "creator", False)
+                    and not getattr(e, "username", None)
+                    and not getattr(e, "usernames", None)
+                    and (e.title or "") == HOLDER_TITLE):
+                found.append(e)
+        known = {getattr(h, "id", None) for h in self._spares}
+        self._spares.extend(h for h in found if h.id not in known)
+
+    async def _refill_loop(self):
+        try:
+            await self._load_spares()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"spares: {e}"
+        while True:
+            try:
+                if (self.ready and not self.frozen
+                        and len(self._spares) < SPARE_TARGET):
+                    h = await self._create_holder()
+                    if h is not None:
+                        self._spares.append(h)
+                        continue  # fill the next one soon
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"spares: {e}"
+            await asyncio.sleep(REFILL_EVERY)
 
     # -- owned public channels -------------------------------------------
     def public_channels(self, max_age=600):
@@ -325,7 +406,7 @@ class Claimer:
             await self.client(functions.channels.UpdateUsernameRequest(ch, ""))
             return True, "انشال اليوزر من القناة (القناة باقية لأن اسمها متغيّر)"
         except errors.FloodWaitError as e:
-            self.claim_flood_until = time.time() + e.seconds
+            self.set_flood_until = time.time() + e.seconds
             return False, f"فلود {fmt_wait(e.seconds)}"
         except errors.RPCError as e:
             if self._mark_frozen(e):
@@ -336,27 +417,25 @@ class Claimer:
         try:
             await self._ensure_connected()
             if mode == "account":
-                await self.client(functions.account.UpdateUsernameRequest(username))
-                return True, "تم تثبيته على حسابك"
-            holder = await self._get_holder()
-            try:
-                await self.client(functions.channels.UpdateUsernameRequest(holder, username))
-            except (errors.ChannelInvalidError, errors.ChannelPrivateError,
-                    errors.ChatAdminRequiredError, errors.ChatWriteForbiddenError):
-                # the reused "Reserved" channel was deleted / left by hand:
-                # every claim on this account failed until a restart
-                self._holder = None
-                holder = await self._get_holder()
-                await self.client(functions.channels.UpdateUsernameRequest(holder, username))
-            self._holder = None  # this channel now owns the username
-            self._public = None
-            try:
-                await self.client(functions.channels.EditTitleRequest(holder, f"@{username}"))
-            except errors.RPCError:
-                pass
-            return True, "تم تثبيته على قناة"
-        except errors.FloodWaitError as e:
-            self.claim_flood_until = time.time() + e.seconds
+                return await self._claim_account(username)
+            if not self.full and not self.channel_wait:
+                res = await self._claim_channel(username)
+                if res is not None:
+                    return res
+            # every channel path is flooded / full: don't lose the name - put
+            # it on the account itself when that overwrites nothing
+            if self.account_fallback and time.time() >= self.acct_flood_until:
+                ok, msg = await self._claim_account(username)
+                if ok:
+                    who = self.label
+                    error(f"📌 القنوات بفلود، فانحجز @{username} على الحساب نفسه ({who}) - "
+                          "انقله لقناة بعدين إذا تريد")
+                return ok, msg
+            if self.full and not self.account_fallback:
+                return False, "وصلت الحد الأقصى للقنوات العامة على الحساب"
+            return False, f"FLOOD:{max(1, self.claim_flood_left)}"
+        except errors.FloodWaitError as e:  # unexpected method: block all claims
+            self.set_flood_until = time.time() + e.seconds
             return False, f"FLOOD:{e.seconds}"
         except errors.UsernamePurchaseAvailableError:
             return False, "معروض للبيع بفراجمنت (محجوز)"
@@ -368,18 +447,57 @@ class Claimer:
             if self._mark_frozen(e):
                 return False, "الحساب مجمّد من تليجرام"
             name = type(e).__name__
-            if "Restricted" in name or "SPAMREPORT" in str(e).upper():
-                if not self.restricted:
-                    who = (f"@{self.me.username}" if self.me and self.me.username
-                           else str(self.me.id) if self.me else self.label)
-                    error(f"🚫 الحساب {who} مقيّد (سبام) وما يگدر يسوي قنوات - انوقف الحجز عليه. "
-                          "راسل @SpamBot حتى ينفك القيد")
-                self._restricted_until = time.time() + 6 * 3600
-                return False, "الحساب مقيّد (سبام) وما يگدر يسوي قنوات"
-            if "TooMuch" in name or "TOO_MUCH" in str(e).upper():
-                self._holder = None
-                self.full = True
-                return False, "وصلت الحد الأقصى للقنوات العامة على الحساب"
             if "Occupied" in name or "OCCUPIED" in str(e).upper():
                 return False, "انحجز قبلك (محجوز)"
             return False, f"{name}: {e}"
+
+    async def _claim_account(self, username):
+        try:
+            await self.client(functions.account.UpdateUsernameRequest(username))
+        except errors.FloodWaitError as e:
+            self.acct_flood_until = time.time() + e.seconds
+            return False, f"FLOOD:{max(1, self.claim_flood_left or e.seconds)}"
+        try:
+            self.me.username = username
+        except Exception:  # noqa: BLE001
+            pass
+        return True, "تم تثبيته على حسابك"
+
+    async def _claim_channel(self, username):
+        """Put the name on a spare holder (or a fresh channel when there is
+        none). Returns (ok, msg), or None when this path is flooded / full so
+        the caller can fall back. Name errors propagate to _claim."""
+        for _attempt in range(3):
+            holder = self._spares.pop(0) if self._spares else await self._create_holder()
+            if holder is None:
+                return None  # creation flooded / restricted
+            try:
+                await self.client(functions.channels.UpdateUsernameRequest(holder, username))
+            except (errors.ChannelInvalidError, errors.ChannelPrivateError,
+                    errors.ChatAdminRequiredError, errors.ChatWriteForbiddenError):
+                continue  # holder deleted / left by hand: drop it, try another
+            except errors.FloodWaitError as e:
+                self._spares.insert(0, holder)
+                self.set_flood_until = time.time() + e.seconds
+                return None
+            except errors.RPCError as e:
+                name = type(e).__name__
+                if "Restricted" in name or "SPAMREPORT" in str(e).upper():
+                    self._spares.insert(0, holder)
+                    if not self.restricted:
+                        error(f"🚫 الحساب {self.label} مقيّد (سبام) - راسل @SpamBot حتى ينفك القيد")
+                    self._restricted_until = time.time() + 6 * 3600
+                    return None
+                if "TooMuch" in name or "TOO_MUCH" in str(e).upper():
+                    self._spares.insert(0, holder)
+                    self.full = True
+                    return None
+                self._spares.insert(0, holder)  # name problem: holder still empty
+                raise
+            self._public = None
+            try:
+                await self.client(functions.channels.EditTitleRequest(holder, f"@{username}"))
+            except errors.RPCError:
+                pass
+            return True, "تم تثبيته على قناة"
+        return None
