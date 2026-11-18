@@ -71,9 +71,15 @@ class SessionPool:
             return 0
         return min(c.check_flood_left for c in a)
 
+    @staticmethod
+    def _usable(c):
+        """Can try a claim: has channel room, or can fall back to its own
+        (empty) account username."""
+        return not c.blocked or getattr(c, "account_fallback", False)
+
     @property
     def claim_flood_left(self):
-        a = [c for c in self.active if not c.blocked]
+        a = [c for c in self.active if self._usable(c)]
         if not a:
             return 0
         return min(c.claim_flood_left for c in a)
@@ -84,7 +90,7 @@ class SessionPool:
 
     @property
     def can_claim(self):
-        return any(not c.blocked for c in self.active)
+        return any(self._usable(c) for c in self.active)
 
     def _rotation(self):
         a = self.active
@@ -128,7 +134,7 @@ class SessionPool:
         return None
 
     def claim(self, username, mode="channel"):
-        candidates = [c for c in self._rotation() if not c.blocked]
+        candidates = [c for c in self._rotation() if self._usable(c)]
         if not candidates:
             return False, "كل الجلسات وصلت حد القنوات العامة أو مقيّدة"
         last = ""
@@ -141,14 +147,14 @@ class SessionPool:
                 self.last_claim_account = c.me.id if c.me else None
                 self.verdicts.pop(username, None)
                 return True, f"{msg} ({label})"
-            if msg.startswith("FLOOD:") or c.blocked:
+            if msg.startswith("FLOOD:") or (c.blocked and not getattr(c, "account_fallback", False)):
                 continue  # try the next account
             if "محجوز" in msg or "Occupied" in msg or "Invalid" in msg:
                 return False, msg  # the name itself is the problem: other accounts won't help
             last = f"{msg} ({account_name(c)})"  # account-specific error: try the next one
         if last:
             return False, last
-        if any(not c.blocked for c in self.active):
+        if any(self._usable(c) for c in self.active):
             return False, f"FLOOD:{max(1, self.claim_flood_left)}"
         return False, "كل الجلسات وصلت حد القنوات العامة أو مقيّدة"
 
