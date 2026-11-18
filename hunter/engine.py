@@ -13,7 +13,10 @@ from .claimer import fmt_wait
 from .events import error, event
 from .generator import make_stream
 
-MAX_QUEUE = 150  # keep it small: every queued name costs a rate-limited account check
+# names waiting for an exact check. Large on purpose: a dropped name may be a
+# free one. Past this, names are saved to the results as "unverified" instead
+# of being thrown away.
+MAX_QUEUE = 5000
 MAX_CLAIM_TRIES = 40   # retries for a free name that failed for a non-name reason
 # a failure containing one of these is about the name itself (taken / banned /
 # on Fragment): retrying or another account won't help
@@ -79,8 +82,9 @@ class Hunter:
         return True
 
     def stop(self):
+        # queued names are kept: the queue worker keeps checking / claiming
+        # them even while the hunt is stopped, so stopping loses nothing
         self.running = False
-        self.clear_pending()
 
     def clear_pending(self):
         """Drop unverified names (e.g. after a formula / method is removed or the
@@ -88,6 +92,7 @@ class Hunter:
         with self._q_lock:
             self.verify_q.clear()
             self.maybe_buf.clear()
+        self._sync_verify(force=True)
 
     def _joiner(self):
         for t in self._threads:
@@ -152,12 +157,53 @@ class Hunter:
         self.queue_claim(name)
         return True
 
+    _overflow_warned_at = 0.0
+    _verify_saved_at = 0.0
+
     def _queue_verify(self, name):
+        spill = None
         with self._q_lock:
             if name not in self.verify_q:
                 self.verify_q.append(name)
                 if len(self.verify_q) > MAX_QUEUE:
-                    del self.verify_q[0]  # drop the oldest, keep the freshest
+                    spill = self.verify_q.pop(0)
+        if spill:
+            # never silently drop a maybe-free name: keep it in the results
+            self.store.add_found(spill, "unverified", "queue-full")
+            now = time.time()
+            if now - self._overflow_warned_at > 3600:
+                self._overflow_warned_at = now
+                error(f"⚠️ قائمة التحقق انملت ({MAX_QUEUE}) - الزايد ينحفظ بالنتائج كـ «غير مؤكد» "
+                      "حتى ما يضيع. ضيف جلسات حتى يخلص الفلود أسرع")
+
+    def _sync_verify(self, force=False):
+        """Save the verify queue with the data (at most once a minute) so a
+        restart / redeploy doesn't forget names waiting for a check."""
+        now = time.time()
+        if not force and now - self._verify_saved_at < 60:
+            return
+        self._verify_saved_at = now
+        with self._q_lock:
+            q = list(self.verify_q)
+        if q == (self.store.data.get("pending_verify") or []):
+            return
+        with self.store.lock:
+            self.store.data["pending_verify"] = q
+        try:
+            self.store.save()
+        except OSError:
+            pass
+
+    def _merge_saved_verify(self):
+        if getattr(self, "_verify_merged", False):
+            return
+        saved = self.store.data.get("pending_verify") or []
+        if saved:
+            self._verify_merged = True
+            with self._q_lock:
+                for n in saved:
+                    if n not in self.verify_q:
+                        self.verify_q.append(n)
 
     def _pop(self, q):
         with self._q_lock:
@@ -167,6 +213,8 @@ class Hunter:
         while True:
             time.sleep(2)
             self._merge_saved_claims()  # restored from a backup after start-up
+            self._merge_saved_verify()
+            self._sync_verify()
             c = self.get_claimer()
             if c is None or not c.ready:
                 continue
