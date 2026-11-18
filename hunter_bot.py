@@ -400,7 +400,7 @@ WEBAPP_URL = (f"{WEBHOOK_URL}/app" if WEBHOOK_URL.startswith("https://")
 
 def main_menu():
     run = btn("⏹ إيقاف الصيد", "stop") if hunter.running else btn("▶️ تشغيل الصيد", "start")
-    top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}}]] if WEBAPP_URL else []
+    top = [[{"text": "📱 لوحة التحكم", "web_app": {"url": WEBAPP_URL}, "style": "danger"}]] if WEBAPP_URL else []
     return {"inline_keyboard": top + [
         [run],
         [btn("🎯 طرق الصيد", "modes"), btn("🛠 الأدوات", "tools")],
