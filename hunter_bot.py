@@ -33,7 +33,7 @@ from hunter import checker
 from hunter.backup import FILENAME as BACKUP_FILENAME
 from hunter.backup import TelegramBackup
 from hunter.claimer import Claimer, fmt_wait
-from hunter.engine import Hunter
+from hunter.engine import Hunter, name_problem
 from hunter.events import error, errors, event, events
 from hunter.generator import MAX_COMBO_NAMES, clean_parts, combo_names, source_label
 from hunter.trends import KIND_LABEL, fetch_trends, formulas_for, usable
@@ -957,6 +957,9 @@ def run_claim_list(chat_id, names):
             store.add_found(n, checker.AVAILABLE, "manual", claimed=True)
             post_to_channel(n)
             bot.send(chat_id, f"🔒 <b>تم الحجز!</b> @{n}\n{html.escape(msg)}")
+        elif not name_problem(msg) and hunter.retry_claim(n, msg):
+            bot.send(chat_id, f"⚠️ ما انحجز @{n} هسه (<code>{html.escape(msg)}</code>)\n"
+                              "📌 انضاف لقائمة الانتظار وراح أعيد المحاولة تلقائياً لين ينحجز.")
         else:
             error(f"ما انحجز @{n}: {msg}")
             bot.send(chat_id, f"⚠️ ما انحجز @{n}\n<code>{html.escape(msg)}</code>")

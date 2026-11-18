@@ -14,6 +14,14 @@ from .events import error, event
 from .generator import make_stream
 
 MAX_QUEUE = 150  # keep it small: every queued name costs a rate-limited account check
+MAX_CLAIM_TRIES = 40   # retries for a free name that failed for a non-name reason
+# a failure containing one of these is about the name itself (taken / banned /
+# on Fragment): retrying or another account won't help
+NAME_FAIL = ("محجوز", "Occupied", "Invalid", "فراجمنت")
+
+
+def name_problem(msg):
+    return any(k in (msg or "") for k in NAME_FAIL)
 
 
 class Hunter:
@@ -41,6 +49,9 @@ class Hunter:
         self.reported = set()
         self.verify_q = []   # need an exact account check
         self.claim_q = []    # confirmed free, waiting for claim flood to end
+        self.claim_tries = {}  # name -> failed attempts (non-name errors)
+        self.claim_due = {}    # name -> earliest time of the next retry
+        self.watch_cool = {}   # watched name -> no claim attempt before this time
         self.watch_hits = []  # usernames from the watchlist that just got claimed
         threading.Thread(target=self._queue_worker, daemon=True).start()
         threading.Thread(target=self._watch_worker, daemon=True).start()
@@ -93,6 +104,53 @@ class Hunter:
         with self._q_lock:
             if name not in self.claim_q:
                 self.claim_q.append(name)
+                self._persist_claims()
+
+    def _persist_claims(self):
+        """Keep the claim queue in the saved data so a restart / redeploy
+        doesn't forget free names that are waiting for a flood to end."""
+        with self.store.lock:
+            self.store.data["pending_claims"] = list(self.claim_q)
+        try:
+            self.store.save()
+        except OSError:
+            pass
+
+    def _merge_saved_claims(self):
+        saved = self.store.data.get("pending_claims") or []
+        with self._q_lock:
+            for n in saved:
+                if n not in self.claim_q:
+                    self.claim_q.append(n)
+
+    def _pop_due_claim(self):
+        now = time.time()
+        with self._q_lock:
+            for i, n in enumerate(self.claim_q):
+                if self.claim_due.get(n, 0) <= now:
+                    self.claim_q.pop(i)
+                    self._persist_claims()
+                    return n
+        return None
+
+    def retry_claim(self, name, msg):
+        """Queue a free name whose claim failed for a reason that isn't the
+        name's fault (disconnect, timeout, all sessions full...). Returns False
+        once it has been retried too often."""
+        n = self.claim_tries.get(name, 0) + 1
+        if n > MAX_CLAIM_TRIES:
+            self.claim_tries.pop(name, None)
+            self.claim_due.pop(name, None)
+            return False
+        self.claim_tries[name] = n
+        self.claim_due[name] = time.time() + min(300, 5 * n)
+        if n == 1:
+            error(f"⚠️ @{name} ما انحجز ({msg}) - راح أعيد المحاولة تلقائياً لين ينحجز")
+        if "كل الجلسات وصلت حد" in msg and n in (1, 10):
+            error("🈵 كل الجلسات وصلت حد القنوات العامة! حرر قناة من 🔑 الجلسات أو ضيف جلسة "
+                  f"حتى ينحجز @{name}")
+        self.queue_claim(name)
+        return True
 
     def _queue_verify(self, name):
         with self._q_lock:
@@ -108,6 +166,7 @@ class Hunter:
     def _queue_worker(self):
         while True:
             time.sleep(2)
+            self._merge_saved_claims()  # restored from a backup after start-up
             c = self.get_claimer()
             if c is None or not c.ready:
                 continue
@@ -116,7 +175,7 @@ class Hunter:
                 if self.store.settings.get("claim_mode", "off") == "off":
                     pass  # keep them until claiming is switched back on
                 else:
-                    name = self._pop(self.claim_q)
+                    name = self._pop_due_claim()
                     if name:
                         self._try_claim(name, "account (مؤجل)", c, notify_wait=False)
                         continue
@@ -161,15 +220,25 @@ class Hunter:
     def _claim_unverified(self, name, c):
         mode = self.store.settings.get("claim_mode", "off")
         ok, msg = c.claim(name, mode)
-        if not ok and (msg.startswith("FLOOD:") or "كل الجلسات" in msg or "مقيّد" in msg):
+        if not ok and msg.startswith("FLOOD:"):
             self._queue_verify(name)  # not the name's fault: retry later / on another account
             return
+        if not ok and not name_problem(msg):
+            # disconnect / timeout / sessions full: never drop a maybe-free name
+            n = self.claim_tries.get(name, 0) + 1
+            if n <= MAX_CLAIM_TRIES:
+                self.claim_tries[name] = n
+                if n == 1:
+                    error(f"⚠️ ما انحجز @{name} (حجز مباشر): {msg} - راح أعيد المحاولة")
+                self._queue_verify(name)
+                return
+            self.claim_tries.pop(name, None)
         if not ok:
             self._bump("taken")
-            if not any(k in msg for k in ("محجوز", "Occupied", "Invalid")):
-                # not just "taken": show why, otherwise failures are invisible
+            if not name_problem(msg):
                 error(f"ما انحجز @{name} (حجز مباشر): {msg}")
             return
+        self.claim_tries.pop(name, None)
         self.reported.add(name)
         self._bump("available")
         self._bump("claimed")
@@ -192,20 +261,44 @@ class Hunter:
             if not watch:
                 continue
             c = self.get_claimer()
-            if c is None or not c.ready or c.check_flood_left:
+            if c is None or not c.ready:
                 continue
             name = watch[i % len(watch)]
             i += 1
+            if time.time() < self.watch_cool.get(name, 0):
+                continue
+            via_tme = bool(c.check_flood_left)
             try:
-                # fresh: a cached "taken" verdict (kept 6h) would hide the release
-                res = c.check(name, fresh=True) if hasattr(c, "verdicts") else c.check(name)
+                if via_tme:
+                    # account checks are flooded: don't go blind on the
+                    # watchlist - t.me (no account) + Fragment, then the claim
+                    # itself is the exact check
+                    res, _src = checker.full_check(name, None)
+                else:
+                    # fresh: a cached "taken" verdict (kept 6h) would hide the release
+                    res = c.check(name, fresh=True) if hasattr(c, "verdicts") else c.check(name)
             except Exception:  # noqa: BLE001
                 continue
-            if res != checker.AVAILABLE:
+            if res != checker.AVAILABLE or c.claim_flood_left and via_tme:
                 continue
             event(f"🎯 اليوزر المراقَب @{name} صار متاح! جاري الحجز...", "ok")
             mode = self.store.settings.get("claim_mode", "off") or "channel"
             ok, msg = c.claim(name, mode if mode != "off" else "channel")
+            if not ok and via_tme and name_problem(msg):
+                # t.me can't see every taken name: keep watching, retry later
+                self.watch_cool[name] = time.time() + 600
+                continue
+            if not ok and not name_problem(msg):
+                # flood / disconnect / sessions full: keep it, retry until it sticks
+                self.watch_cool[name] = time.time() + 30
+                if msg.startswith("FLOOD:"):
+                    self.queue_claim(name)
+                else:
+                    self.retry_claim(name, msg)
+                if name not in self.reported:
+                    self.reported.add(name)
+                    error(f"🎯 @{name} صار متاح بس ما انحجز بعد ({msg}) - بالانتظار وراح ينحجز تلقائياً")
+                continue
             self._remove_watch(name)
             if ok:
                 self.store.day_inc("claims")
@@ -352,8 +445,24 @@ class Hunter:
                               (False, f"الحساب بفلود ({fmt_wait(claimer.claim_flood_left)}) "
                                       "- بالانتظار وراح ينحجز تلقائياً"))
             return
+        if not ok and not name_problem(msg):
+            # disconnect / timeout / every session full or frozen: the name is
+            # still free, so keep retrying instead of losing it
+            first_time = name not in self.claim_tries
+            if self.retry_claim(name, msg):
+                if notify_wait and first_time:
+                    self.store.add_found(name, checker.AVAILABLE, source, claimed=False)
+                    self.on_found(name, checker.AVAILABLE, source,
+                                  (False, f"{msg} - بالانتظار وراح ينحجز تلقائياً"))
+                return
+        self.claim_tries.pop(name, None)
+        self.claim_due.pop(name, None)
         if ok:
             event(f"🔒 انحجز @{name}", "ok")
+            with self.store.lock:  # claimed: drop the watch entry if any
+                w = self.store.settings.get("watch", [])
+                if name in w:
+                    w.remove(name)
         else:
             error(f"ما انحجز @{name}: {msg}")
         if ok:
