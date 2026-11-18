@@ -839,6 +839,7 @@ def settings_menu():
         [btn(f"📢 قناة الإشعارات: {s.get('notify_channel') or '—'}", "set_channel")],
         [btn(f"♻️ تشغيل الصيد تلقائياً بعد إعادة التشغيل: {'✅' if s.get('auto_resume') else '❌'}",
              "toggle_resume")],
+        [btn(f"🎨 الإيموجي المميز ({len(set((s.get('premium_emoji') or {}).values()))})", "pemoji", "success")],
         [btn("📜 سجل الأخطاء", "errors"), btn("💾 نسخ احتياطي الحين", "backup_now")],
         [btn("❓ شرح القوالب", "help")],
         [btn("🔙 رجوع", "menu")],
@@ -1338,6 +1339,52 @@ def login_step(chat_id, state, text, mid):
     save_session(chat_id, val)
 
 
+# ---------------------------------------------------------------- premium emoji
+# emoji the bot uses most, shown as a hint of what is worth replacing
+BOT_EMOJI = "🎯 🔒 ✅ ❌ 🟢 🔴 ⚠️ 🧊 📌 🔑 ⚙️ 🏆 📊 💾 🔍 🛠 ▶️ ⏹ 🎉 👤 🧭 💎 📡 📋 ⚡ 🔔 📢 🚫 🔙"
+
+
+def pemoji_text():
+    m = store.settings.get("premium_emoji") or {}
+    uniq = {}
+    for ch, eid in m.items():
+        uniq.setdefault(eid, ch)  # one entry per emoji (with / without U+FE0F)
+    m = uniq
+    have = " ".join(m.values()) if m else "— ماكو بعد"
+    return ("🎨 <b>الإيموجي المميز</b>\n\n"
+            "البوت يبدّل الإيموجي العادي بالمميز (المتحرك) بكل رسائله.\n"
+            "⚠️ يشتغل بس إذا صاحب البوت (الحساب اللي سوّاه بـ @BotFather) عنده <b>Telegram Premium</b>.\n\n"
+            "<b>الطريقة:</b> دزلي هسه رسالة بيها الإيموجيات المميزة اللي تريدها. كل إيموجي مميز "
+            "يحل محل الإيموجي العادي اللي يشبهه (مثلاً 🔥 المميز بدال 🔥 العادي).\n\n"
+            f"<b>المضاف ({len(m)}):</b>\n{have}\n\n"
+            f"<b>أكثر إيموجيات يستخدمها البوت:</b>\n{BOT_EMOJI}")
+
+
+def pemoji_menu():
+    rows = [[btn("➕ ضيف إيموجيات", "pemoji")]]
+    if store.settings.get("premium_emoji"):
+        rows.append([btn("🗑 مسح الكل", "pemoji_clear")])
+    rows.append([btn("🔙 الإعدادات", "settings")])
+    return {"inline_keyboard": rows}
+
+
+def custom_emojis(msg):
+    """[(plain emoji, custom_emoji_id)] from a message's custom_emoji entities."""
+    text = msg.get("text") or msg.get("caption") or ""
+    raw = text.encode("utf-16-le")
+    out = []
+    for e in msg.get("entities") or msg.get("caption_entities") or []:
+        if e.get("type") != "custom_emoji" or not e.get("custom_emoji_id"):
+            continue
+        ch = raw[e["offset"] * 2:(e["offset"] + e["length"]) * 2].decode("utf-16-le", "ignore")
+        if ch:
+            out.append((ch, e["custom_emoji_id"]))
+    return out
+
+
+bot.emoji_source = lambda: store.settings.get("premium_emoji") or {}
+
+
 # ---------------------------------------------------------------- prompts
 PROMPTS = {
     "set_template": ("template", "✍️ أرسل القالب (مثال <code>L=L=L</code> أو <code>CVCVC</code>).\n\n"
@@ -1606,6 +1653,13 @@ def handle_callback(cq):
     elif data == "watch_clear":
         store.set("watch", [])
         bot.edit(chat_id, mid, watch_text(), watch_menu())
+    elif data == "pemoji":
+        states[chat_id] = "pemoji"
+        bot.edit(chat_id, mid, pemoji_text(), pemoji_menu())
+    elif data == "pemoji_clear":
+        states.pop(chat_id, None)
+        store.set("premium_emoji", {})
+        bot.edit(chat_id, mid, pemoji_text(), pemoji_menu())
     elif data == "errors":
         bot.edit(chat_id, mid, errors_text(),
                  {"inline_keyboard": [[btn("🗑 مسح السجل", "errors_clear"), btn("🔙 رجوع", "settings")]]})
@@ -1919,6 +1973,25 @@ def handle_message(msg):
             bot.send(chat_id, "⚠️ ما گدرت أقرأ الملف (الحد 5MB).")
             return
         text = content
+
+    if state == "pemoji":
+        found = custom_emojis(msg)
+        if not found:
+            bot.send(chat_id, "⚠️ ما لگيت إيموجي مميز بالرسالة. دز إيموجيات من حزم البريميوم "
+                              "(المتحركة)، مو الإيموجي العادي.", pemoji_menu())
+            return
+        with store.lock:
+            m = dict(store.settings.get("premium_emoji") or {})
+            for ch, eid in found:
+                m[ch] = eid
+                m[ch.rstrip("\ufe0f")] = eid  # match with or without the variation selector
+        store.set("premium_emoji", m)
+        states.pop(chat_id, None)
+        bot.send(chat_id, f"✅ انضافت <b>{len(found)}</b> إيموجي مميز: "
+                          + " ".join(ch for ch, _ in found)
+                          + "\n\nإذا طلعن هنا متحركات، يعني الميزة شغّالة. وإذا طلعن عاديات، "
+                            "يعني صاحب البوت ما عنده بريميوم.\n\n" + pemoji_text(), pemoji_menu())
+        return
 
     if state == "similar":
         start_similar(chat_id, text)

@@ -1,5 +1,6 @@
 """Minimal Telegram Bot API client."""
 import json
+import re
 
 import requests
 
@@ -10,6 +11,68 @@ class BotAPI:
         self.base = f"https://api.telegram.org/bot{token}"
         self.s = requests.Session()
         self.last_error = ""  # "<method>: <Telegram's reason>" of the last failed call
+        # premium (custom) emoji: callable returning {plain emoji: custom_emoji_id}.
+        # Bots may send them when the bot's owner has Telegram Premium.
+        self.emoji_source = None
+        self._emoji_cache = (None, None)
+
+    # -- premium emoji ---------------------------------------------------
+    _TAG = re.compile(r"(<[^>]+>)")
+    _SKIP_TAGS = ("code", "pre", "a", "tg-emoji")
+    MAX_EMOJI = 90  # Telegram caps entities per message
+
+    def _emoji_re(self, mapping):
+        key = tuple(sorted(mapping))
+        if self._emoji_cache[0] != key:
+            alts = sorted(key, key=len, reverse=True)
+            rx = re.compile("(" + "|".join(re.escape(a) for a in alts) + ")\ufe0f?") if alts else None
+            self._emoji_cache = (key, rx)
+        return self._emoji_cache[1]
+
+    def premium(self, text):
+        """Wrap plain emoji that have a premium twin in <tg-emoji> (HTML)."""
+        try:
+            mapping = self.emoji_source() if self.emoji_source else None
+        except Exception:  # noqa: BLE001
+            mapping = None
+        if not mapping or not text:
+            return text
+        rx = self._emoji_re(mapping)
+        if rx is None:
+            return text
+        out, skip, used = [], 0, 0
+        for part in self._TAG.split(text):
+            if part.startswith("<") and part.endswith(">"):
+                name = part.strip("</>").split()[0].lower() if part.strip("</>") else ""
+                if name in self._SKIP_TAGS:
+                    skip += -1 if part.startswith("</") else 1
+                    skip = max(0, skip)
+                out.append(part)
+                continue
+            if skip or used >= self.MAX_EMOJI:
+                out.append(part)
+                continue
+
+            def sub(m):
+                nonlocal used
+                if used >= self.MAX_EMOJI:
+                    return m.group(0)
+                eid = mapping.get(m.group(1)) or mapping.get(m.group(1).rstrip("\ufe0f"))
+                if not eid:
+                    return m.group(0)
+                used += 1
+                return f'<tg-emoji emoji-id="{eid}">{m.group(0)}</tg-emoji>'
+            out.append(rx.sub(sub, part))
+        return "".join(out)
+
+    def _send_text(self, method, p):
+        fancy = self.premium(p["text"])
+        if fancy != p["text"]:
+            res = self.call(method, **{**p, "text": fancy})
+            if res is not None:
+                return res
+            # e.g. the owner's Premium ran out: send it with plain emoji
+        return self.call(method, **p)
 
     def _fail(self, method, reason):
         self.last_error = f"{method}: {reason}"[:300].replace(self.token, "***")
@@ -34,14 +97,14 @@ class BotAPI:
              "disable_web_page_preview": True}
         if markup:
             p["reply_markup"] = markup
-        return self.call("sendMessage", **p)
+        return self._send_text("sendMessage", p)
 
     def edit(self, chat_id, message_id, text, markup=None):
         p = {"chat_id": chat_id, "message_id": message_id, "text": text,
              "parse_mode": "HTML", "disable_web_page_preview": True}
         if markup:
             p["reply_markup"] = markup
-        return self.call("editMessageText", **p)
+        return self._send_text("editMessageText", p)
 
     def answer(self, callback_id, text="", alert=False):
         return self.call("answerCallbackQuery", callback_query_id=callback_id,
