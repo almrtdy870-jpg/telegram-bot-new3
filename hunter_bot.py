@@ -371,13 +371,15 @@ def btn_style(text, data=""):
     t = (text or "").strip()
     if data in _RED_DATA or t.startswith(_RED_START) or any(w in t for w in _RED_WORDS):
         return "danger"
+    if data == "noop":
+        return None  # page counters / spacers stay plain
     if data.startswith(("set_", "toggle_", "cycle_")):
-        return None  # settings rows stay plain
+        return "danger"
     if data.startswith("claim") or t.startswith(_GREEN_START):
         return "success"
     if t.startswith(_BLUE_START):
         return "primary"
-    return None
+    return "danger"  # every other button is red
 
 
 def btn(text, data, style=None):
@@ -2200,7 +2202,7 @@ def poll_forever():
 
 
 RESTORE_KB = {"inline_keyboard": [[{"text": "🔄 حاول الاسترجاع", "callback_data": "restore_retry", "style": "primary"}],
-                                  [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh"}]]}
+                                  [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh", "style": "danger"}]]}
 
 
 def restore_failed_notice():
