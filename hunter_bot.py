@@ -205,7 +205,7 @@ def on_found(username, status, source, claim_result):
         ok, msg = claim_result
         text += f"\n{'🔒' if ok else '⚠️'} الحجز: {html.escape(msg)}"
     if not (claim_result and claim_result[0]):
-        markup = {"inline_keyboard": [[{"text": "📌 احجزه بقناة", "callback_data": f"claim:{username}"}]]}
+        markup = {"inline_keyboard": [[{"text": "📌 احجزه بقناة", "callback_data": f"claim:{username}", "style": "success"}]]}
     bot.send(chat_id, text, markup)
 
 
@@ -357,8 +357,35 @@ HELP = (
 
 
 # ---------------------------------------------------------------- keyboards
-def btn(text, data):
-    return {"text": text, "callback_data": data}
+# Telegram button colours (Bot API "style"): danger = red, success = green,
+# primary = blue. Older Telegram apps just show a normal button.
+_RED_DATA = ("stop", "clear_found_ok", "rep_clear_ok", "weak_ok", "errors_clear",
+             "combo_clear", "rep_clear", "clear_found", "watch_clear", "weak")
+_RED_START = ("⏹", "🗑", "❌", "🚫", "⛔")
+_GREEN_START = ("▶️", "✅", "➕", "💾", "📥")
+_BLUE_START = ("📌", "🔍", "🔄", "🎯", "🔑")
+_RED_WORDS = ("حذف", "إيقاف", "وقّف", "تحرير", "حرر")
+
+
+def btn_style(text, data=""):
+    t = (text or "").strip()
+    if data in _RED_DATA or t.startswith(_RED_START) or any(w in t for w in _RED_WORDS):
+        return "danger"
+    if data.startswith(("set_", "toggle_", "cycle_")):
+        return None  # settings rows stay plain
+    if data.startswith("claim") or t.startswith(_GREEN_START):
+        return "success"
+    if t.startswith(_BLUE_START):
+        return "primary"
+    return None
+
+
+def btn(text, data, style=None):
+    b = {"text": text, "callback_data": data}
+    style = style or btn_style(text, data)
+    if style:
+        b["style"] = style
+    return b
 
 
 BACK = {"inline_keyboard": [[btn("🔙 رجوع", "menu")]]}
@@ -2172,7 +2199,7 @@ def poll_forever():
             threading.Thread(target=dispatch, args=(upd,), daemon=True).start()
 
 
-RESTORE_KB = {"inline_keyboard": [[{"text": "🔄 حاول الاسترجاع", "callback_data": "restore_retry"}],
+RESTORE_KB = {"inline_keyboard": [[{"text": "🔄 حاول الاسترجاع", "callback_data": "restore_retry", "style": "primary"}],
                                   [{"text": "🆕 كمّل بدون الاسترجاع", "callback_data": "restore_fresh"}]]}
 
 
